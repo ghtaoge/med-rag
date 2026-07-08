@@ -1,0 +1,60 @@
+# Med-Rag 企业级医疗知识助手配置
+
+app:
+  name: "Med-Rag 知识助手"
+  version: "1.0.0"
+  host: "0.0.0.0"
+  port: 8000
+
+milvus:
+  host: localhost
+  port: 19530
+  collection_name: med_rag_chunks
+  embedding_dim: 1024
+  index_type: HNSW
+  metric_type: COSINE
+  M: 32
+  efConstruction: 256
+  ef_search: 128
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+  file_hash_prefix: "med_rag:file_hash:"
+  session_prefix: "med_rag:session:"
+  session_ttl: 86400
+
+chunker:
+  min_chunk_size: 150
+  max_chunk_size: 500
+  overlap: 50
+
+retrieval:
+  default_top_k: 5
+  vector_top_k: 20
+  keyword_top_k: 20
+  rrf_k: 60
+  rerank_top_k: 5
+
+llm:
+  provider: deepseek
+  fallback: qwen
+  temperature: 0.3
+  max_tokens: 4096
+  deepseek:
+    api_key: ""
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-chat"
+  qwen:
+    api_key: ""
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: "qwen-plus"
+  zhipu:
+    api_key: ""
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
+    model: "glm-4-plus"
+
+knowledge_dir: data
+whoosh_dir: whoosh_index
+log_level: INFO

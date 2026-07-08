@@ -92,6 +92,10 @@ export function syncAllDocuments() {
   return api.post('/api/v1/documents/sync')
 }
 
+export function syncSingleDocument(filename) {
+  return api.post(`/api/v1/documents/sync/${encodeURIComponent(filename)}`)
+}
+
 export function validateDocument(file) {
   const formData = new FormData()
   formData.append('file', file)
@@ -101,7 +105,7 @@ export function validateDocument(file) {
 }
 
 export function deleteDocument(filename) {
-  return api.delete(`/api/v1/documents/${filename}`)
+  return api.delete(`/api/v1/documents/${encodeURIComponent(filename)}`)
 }
 
 // 评估

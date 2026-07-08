@@ -1,143 +1,156 @@
 <template>
-  <div class="chat-view">
-    <!-- 左侧：对话区 -->
-    <div class="chat-main">
-      <!-- 消息列表 -->
-      <div class="chat-messages" ref="messagesRef">
-        <!-- 欢迎信息 -->
-        <div v-if="!chatStore.answer && !chatStore.isStreaming" class="welcome-message">
-          <el-icon :size="64" color="#409EFF"><FirstAidKit /></el-icon>
-          <h2>Med-Rag 医疗知识助手</h2>
-          <p>基于知识库的智能问答，回答标注来源，自动检测幻觉</p>
-          <div class="example-questions">
-            <el-tag
-              v-for="q in exampleQuestions"
-              :key="q"
-              @click="chatStore.startStream(q)"
-              class="example-tag"
-              effect="plain"
-              size="large"
+  <div class="chat-view page-shell">
+    <section class="chat-workspace panel">
+      <div class="chat-main">
+        <div class="welcome-strip" v-if="!chatStore.question && !chatStore.answer && !chatStore.isStreaming">
+          <div class="welcome-copy">
+            <div class="welcome-title-row">
+              <span class="welcome-icon"><Stethoscope :size="22" /></span>
+              <p class="eyebrow">知识问答</p>
+            </div>
+            <h2>今天想查点什么？</h2>
+            <p>输入医疗相关问题，系统会从已上传文档里找依据，回答后把来源、相关片段和校验结果放在右侧。</p>
+          </div>
+          <div class="quick-note">
+            <ShieldCheck :size="20" />
+            <strong>使用前小提醒</strong>
+            <span>先确认文档已同步；回答用于知识核对，不替代医生诊断。</span>
+          </div>
+        </div>
+
+        <div class="prompt-chips" v-if="!chatStore.answer && !chatStore.isStreaming">
+          <button
+            v-for="item in exampleQuestions"
+            :key="item.text"
+            type="button"
+            class="prompt-chip"
+            @click="ask(item.text)"
+          >
+            <component :is="item.icon" :size="16" />
+            <span>{{ item.text }}</span>
+          </button>
+        </div>
+
+        <div class="messages" ref="messagesRef">
+          <article v-if="chatStore.question" class="message-row user">
+            <div class="avatar"><UserRound :size="17" /></div>
+            <div class="bubble">{{ chatStore.question }}</div>
+          </article>
+
+          <div v-if="chatStore.intent" class="intent-line">
+            <span class="badge" :class="intentClass">
+              <SearchCheck :size="14" />
+              {{ intentLabel }} · 置信度 {{ chatStore.intent.confidence }} · {{ methodLabel(chatStore.intent.method) }}
+            </span>
+          </div>
+
+          <article v-if="chatStore.answer" class="message-row assistant">
+            <div class="avatar"><Cross :size="17" /></div>
+            <div class="bubble answer-bubble">
+              <div class="answer-text" v-html="renderedAnswer"></div>
+              <div v-if="chatStore.isStreaming" class="streaming-indicator">
+                <LoaderCircle :size="16" class="spin" />
+                正在继续整理回答
+              </div>
+            </div>
+          </article>
+
+          <div v-if="chatStore.isStreaming && !chatStore.answer" class="empty-stream">
+            <LoaderCircle :size="16" class="spin" />
+            正在检索相关资料
+          </div>
+        </div>
+
+        <form class="composer" @submit.prevent="handleSubmit">
+          <div class="composer-input">
+            <Search :size="18" />
+            <textarea
+              v-model="inputQuestion"
+              rows="2"
+              placeholder="输入问题，例如：阿司匹林有哪些常见适应症？"
+              :disabled="chatStore.isStreaming"
+              @keydown.enter.exact.prevent="handleSubmit"
+            ></textarea>
+          </div>
+          <div class="composer-actions">
+            <button
+              type="button"
+              class="btn btn-ghost"
+              :disabled="!chatStore.question && !chatStore.answer"
+              @click="chatStore.clearChat()"
             >
-              {{ q }}
-            </el-tag>
+              <RotateCcw :size="16" />
+              清空
+            </button>
+            <button
+              v-if="chatStore.isStreaming"
+              type="button"
+              class="btn btn-danger"
+              @click="chatStore.stopStream()"
+            >
+              <Square :size="15" />
+              停止
+            </button>
+            <button v-else type="submit" class="btn btn-primary" :disabled="!inputQuestion.trim()">
+              <SendHorizontal :size="16" />
+              发送
+            </button>
           </div>
-        </div>
+        </form>
+      </div>
 
-        <!-- 用户问题 -->
-        <div v-if="chatStore.question" class="message user-message">
-          <div class="message-avatar user-avatar">
-            <el-icon><User /></el-icon>
+      <aside class="insight-panel">
+        <section class="side-section">
+          <div class="section-heading">
+            <span><ShieldCheck :size="17" /> 回答校验</span>
+            <span class="badge" :class="confidenceClass">{{ confidenceText }}</span>
           </div>
-          <div class="message-content">{{ chatStore.question }}</div>
-        </div>
 
-        <!-- 意图识别 -->
-        <div v-if="chatStore.intent" class="intent-badge">
-          <el-tag :type="intentType" size="small">
-            意图: {{ intentLabel }} ({{ chatStore.intent.confidence }}) — {{ chatStore.intent.method }}模式
-          </el-tag>
-        </div>
-
-        <!-- AI 回答 -->
-        <div v-if="chatStore.answer" class="message ai-message">
-          <div class="message-avatar ai-avatar">
-            <el-icon><FirstAidKit /></el-icon>
-          </div>
-          <div class="message-content">
-            <div class="answer-text" v-html="renderedAnswer"></div>
-            <div v-if="chatStore.isStreaming" class="streaming-indicator">
-              <el-icon class="is-loading"><Loading /></el-icon> 正在生成...
+          <div v-if="chatStore.correctness" class="confidence-card">
+            <div class="score-block">
+              <strong>{{ scorePercent }}%</strong>
+              <span>综合评分</span>
+            </div>
+            <div class="confidence-meta">
+              <p>{{ chatStore.correctness.source_count }} 个来源参与校验</p>
+              <small>如发现来源冲突或高风险表述，会在这里提示。</small>
             </div>
           </div>
-        </div>
-      </div>
-
-      <!-- 输入区 -->
-      <div class="chat-input">
-        <el-input
-          v-model="inputQuestion"
-          placeholder="输入您的医疗相关问题..."
-          :disabled="chatStore.isStreaming"
-          @keydown.enter="handleSubmit"
-          size="large"
-          class="chat-input-field"
-        >
-          <template #append>
-            <el-button
-              :icon="chatStore.isStreaming ? 'VideoPause' : 'Promotion'"
-              :type="chatStore.isStreaming ? 'danger' : 'primary'"
-              @click="chatStore.isStreaming ? chatStore.stopStream() : handleSubmit()"
-            />
-          </template>
-        </el-input>
-      </div>
-    </div>
-
-    <!-- 右侧：来源 + 置信度 -->
-    <div class="chat-sidebar" v-if="chatStore.answer">
-      <!-- 正确性校验 -->
-      <div v-if="chatStore.correctness" class="sidebar-section">
-        <h4>正确性校验</h4>
-        <div class="confidence-card">
-          <div class="confidence-score">
-            <el-progress
-              :percentage="chatStore.correctness.score * 100"
-              :color="confidenceColor"
-              :stroke-width="8"
-            />
+          <div v-else class="muted-box">
+            <CircleHelp :size="16" />
+            <span>回答完成后，这里会显示置信度、来源数量和风险提示。</span>
           </div>
-          <div class="confidence-label">
-            <el-tag :type="confidenceTagType" size="large">
-              {{ chatStore.correctness.confidence }} 置信度
-            </el-tag>
-            <el-text size="small" type="info">
-              {{ chatStore.correctness.source_count }} 个独立来源
-            </el-text>
-          </div>
-        </div>
-        <!-- 警告 -->
-        <div v-if="chatStore.correctness.warnings?.length" class="warnings">
-          <el-alert
-            v-for="w in chatStore.correctness.warnings"
-            :key="w"
-            :title="w"
-            type="warning"
-            :closable="false"
-            show-icon
-          />
-        </div>
-        <!-- 幻觉标记 -->
-        <div v-if="chatStore.correctness.hallucination_flags?.length" class="hallucination">
-          <el-alert
-            v-for="h in chatStore.correctness.hallucination_flags"
-            :key="h"
-            :title="h"
-            type="error"
-            :closable="false"
-            show-icon
-          />
-        </div>
-      </div>
 
-      <!-- 来源列表 -->
-      <div v-if="chatStore.sources?.length" class="sidebar-section">
-        <h4>知识来源</h4>
-        <el-card
-          v-for="(s, i) in chatStore.sources"
-          :key="i"
-          shadow="hover"
-          class="source-card"
-        >
-          <template #header>
-            <div class="source-header">
-              <el-tag size="small" type="info">{{ s.source }}</el-tag>
-              <el-text size="small">相关度: {{ s.score }}</el-text>
-            </div>
-          </template>
-          <el-text size="small">{{ s.content_preview }}</el-text>
-        </el-card>
-      </div>
-    </div>
+          <div v-if="chatStore.correctness?.warnings?.length" class="alert-list">
+            <div v-for="w in chatStore.correctness.warnings" :key="w" class="notice warning">{{ w }}</div>
+          </div>
+          <div v-if="chatStore.correctness?.hallucination_flags?.length" class="alert-list">
+            <div v-for="h in chatStore.correctness.hallucination_flags" :key="h" class="notice error">{{ h }}</div>
+          </div>
+        </section>
+
+        <section class="side-section sources-section">
+          <div class="section-heading">
+            <span><BookOpenText :size="17" /> 引用来源</span>
+            <span class="count">{{ chatStore.sources?.length || 0 }}</span>
+          </div>
+
+          <div v-if="chatStore.sources?.length" class="source-list">
+            <article v-for="(s, i) in chatStore.sources" :key="i" class="source-card">
+              <div class="source-top">
+                <span class="badge badge-info"><FileText :size="14" /> {{ s.source || `来源 ${i + 1}` }}</span>
+                <small>相关度 {{ s.score }}</small>
+              </div>
+              <p>{{ s.content_preview }}</p>
+            </article>
+          </div>
+          <div v-else class="muted-box">
+            <BookOpenText :size="16" />
+            <span>系统找到引用片段后会显示在这里，便于回到原文核对。</span>
+          </div>
+        </section>
+      </aside>
+    </section>
   </div>
 </template>
 
@@ -145,17 +158,33 @@
 import { ref, computed } from 'vue'
 import { useChatStore } from '../stores/chat'
 import MarkdownIt from 'markdown-it'
+import {
+  BookOpenText,
+  CircleHelp,
+  Cross,
+  FileText,
+  HeartPulse,
+  LoaderCircle,
+  Pill,
+  RotateCcw,
+  Search,
+  SearchCheck,
+  SendHorizontal,
+  ShieldCheck,
+  Square,
+  Stethoscope,
+  UserRound,
+} from 'lucide-vue-next'
 
-const md = new MarkdownIt({ html: false })
-
+const md = new MarkdownIt({ html: false, breaks: true })
 const chatStore = useChatStore()
 const inputQuestion = ref('')
 const messagesRef = ref(null)
 
 const exampleQuestions = [
-  '阿司匹林的适应症有哪些？',
-  '布洛芬和对乙酰氨基酚有什么区别？',
-  '药品不良反应如何处理？',
+  { text: '阿司匹林的适应症有哪些？', icon: Pill },
+  { text: '布洛芬和对乙酰氨基酚有什么区别？', icon: HeartPulse },
+  { text: '药品不良反应如何处理？', icon: ShieldCheck },
 ]
 
 const intentLabel = computed(() => {
@@ -163,186 +192,495 @@ const intentLabel = computed(() => {
   return map[chatStore.intent?.category] || '查询'
 })
 
-const intentType = computed(() => {
-  const map = { query: '', definition: 'success', comparison: 'warning', process: 'info', negation: 'danger' }
-  return map[chatStore.intent?.category] || ''
+const intentClass = computed(() => {
+  const map = {
+    query: 'badge-info',
+    definition: 'badge-success',
+    comparison: 'badge-warning',
+    process: 'badge-info',
+    negation: 'badge-danger',
+  }
+  return map[chatStore.intent?.category] || 'badge-info'
 })
 
-const renderedAnswer = computed(() => {
-  return md.render(chatStore.answer || '')
-})
+const renderedAnswer = computed(() => md.render(chatStore.answer || ''))
+const score = computed(() => Math.round((chatStore.correctness?.score || 0) * 100))
+const scorePercent = computed(() => Math.max(0, Math.min(100, score.value)))
 
-const confidenceColor = computed(() => {
-  const s = chatStore.correctness?.score || 0
-  if (s >= 0.8) return '#67C23A'
-  if (s >= 0.6) return '#E6A23C'
-  return '#F56C6C'
-})
-
-const confidenceTagType = computed(() => {
+const confidenceText = computed(() => {
   const c = chatStore.correctness?.confidence
-  if (c === 'high') return 'success'
-  if (c === 'medium') return 'warning'
-  return 'danger'
+  if (c === 'high') return '较可靠'
+  if (c === 'medium') return '需核对'
+  if (c === 'low') return '谨慎使用'
+  return '待生成'
 })
+
+const confidenceClass = computed(() => {
+  const c = chatStore.correctness?.confidence
+  if (c === 'high') return 'badge-success'
+  if (c === 'medium') return 'badge-warning'
+  if (c === 'low') return 'badge-danger'
+  return 'badge-info'
+})
+
+function methodLabel(method) {
+  if (!method) return '自动识别'
+  return method === 'rule' ? '规则识别' : '模型识别'
+}
+
+function ask(question) {
+  inputQuestion.value = question
+  handleSubmit()
+}
 
 function handleSubmit() {
-  if (!inputQuestion.value.trim()) return
-  chatStore.startStream(inputQuestion.value.trim())
+  const question = inputQuestion.value.trim()
+  if (!question || chatStore.isStreaming) return
+  chatStore.startStream(question)
   inputQuestion.value = ''
 }
 </script>
 
 <style scoped>
 .chat-view {
-  display: flex;
-  height: calc(100vh - 40px);
-  gap: 16px;
-}
-
-.chat-main {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  background: #fff;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.chat-messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px;
-}
-
-.welcome-message {
-  text-align: center;
-  padding: 60px 20px;
-}
-
-.welcome-message h2 {
-  margin: 16px 0 8px;
-  color: #303133;
-}
-
-.welcome-message p {
-  color: #909399;
-  margin-bottom: 24px;
-}
-
-.example-questions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: center;
-}
-
-.example-tag {
-  cursor: pointer;
-}
-
-.message {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.message-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.user-avatar {
-  background: #409EFF;
-  color: #fff;
-}
-
-.ai-avatar {
-  background: #67C23A;
-  color: #fff;
-}
-
-.user-message .message-content {
-  background: #ecf5ff;
-  padding: 12px 16px;
-  border-radius: 8px;
-  color: #303133;
-}
-
-.ai-message .message-content {
-  background: #f4f4f5;
-  padding: 12px 16px;
-  border-radius: 8px;
-  max-width: 100%;
-}
-
-.answer-text {
-  line-height: 1.6;
-}
-
-.answer-text p {
-  margin-bottom: 8px;
-}
-
-.streaming-indicator {
-  color: #409EFF;
-  margin-top: 8px;
-}
-
-.intent-badge {
-  margin-bottom: 12px;
-}
-
-.chat-input {
-  padding: 16px;
-  border-top: 1px solid #e4e7ed;
-}
-
-.chat-input-field {
+  min-height: 0;
+  height: calc(100vh - 54px);
   width: 100%;
 }
 
-.chat-sidebar {
-  width: 320px;
-  background: #fff;
-  border-radius: 8px;
-  overflow-y: auto;
+.chat-workspace {
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg-primary);
+}
+
+.chat-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+}
+
+.welcome-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 250px;
+  gap: 14px;
+  margin: 16px 20px 0;
   padding: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
 }
 
-.sidebar-section {
-  margin-bottom: 16px;
-}
-
-.sidebar-section h4 {
-  margin-bottom: 8px;
-  color: #303133;
-}
-
-.confidence-card {
-  padding: 8px;
-  background: #f9f9fb;
-  border-radius: 6px;
-}
-
-.confidence-label {
+.welcome-title-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
+  margin-bottom: 4px;
 }
 
-.source-card {
+.welcome-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--accent-color-light);
+  color: var(--accent-color);
+}
+
+.welcome-copy h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.welcome-copy p:last-child {
+  max-width: 680px;
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.quick-note {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--accent-color);
+}
+
+.quick-note strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.quick-note span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.prompt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 20px 0;
+}
+
+.prompt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.prompt-chip:hover {
+  border-color: rgba(99, 102, 241, 0.35);
+  background: var(--accent-color-light);
+  color: var(--text-primary);
+}
+
+.messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+  scroll-behavior: smooth;
+}
+
+.message-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.message-row.user {
+  justify-content: flex-end;
+}
+
+.message-row.user .avatar {
+  order: 2;
+  background: var(--accent-color-light);
+  color: var(--accent-color);
+}
+
+.message-row.user .bubble {
+  max-width: min(720px, 82%);
+  background: var(--accent-color-light);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  color: var(--text-primary);
+}
+
+.message-row.assistant .avatar {
+  background: #1a1b2e;
+  color: var(--text-secondary);
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.bubble {
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.answer-bubble {
+  max-width: min(820px, 92%);
+}
+
+.answer-text :deep(p) {
+  margin: 0 0 10px;
+}
+
+.answer-text :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.answer-text :deep(ul),
+.answer-text :deep(ol) {
+  padding-left: 22px;
+}
+
+.intent-line {
+  margin: -2px 0 12px 46px;
+}
+
+.streaming-indicator,
+.empty-stream {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.empty-stream {
+  padding: 10px 14px;
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.composer {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 12px 24px 16px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.composer-input {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-tertiary);
+}
+
+.composer textarea {
+  width: 100%;
+  min-height: 42px;
+  max-height: 120px;
+  resize: none;
+  padding: 0;
+  border: 0;
+  outline: none;
+  color: var(--text-primary);
+  background: transparent;
+  line-height: 1.5;
+}
+
+.composer textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+.composer-input:focus-within {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.16);
+}
+
+.composer-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.insight-panel {
+  min-width: 0;
+  padding: 8px;
+  border-left: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  overflow-y: auto;
+}
+
+.side-section {
+  padding: 10px;
   margin-bottom: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
 }
 
-.source-header {
+.section-heading {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.section-heading span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.count {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.confidence-card {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.score-block {
+  display: grid;
+  place-items: center;
+  width: 78px;
+  height: 64px;
+  flex: 0 0 78px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+}
+
+.score-block strong,
+.score-block span {
+  display: block;
+}
+
+.score-block strong {
+  align-self: end;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.score-block span {
+  align-self: start;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.confidence-meta p {
+  margin: 0 0 6px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.confidence-meta small,
+.muted-box {
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+.muted-box {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  font-size: 13px;
+}
+
+.alert-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.source-list {
+  display: grid;
+  gap: 8px;
+}
+
+.source-card {
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.source-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.source-top small {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.source-card p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+@media (max-width: 1100px) {
+  .chat-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .insight-panel {
+    border-left: 0;
+    border-top: 1px solid var(--border-color);
+  }
+
+  .chat-view {
+    height: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .welcome-strip,
+  .composer {
+    grid-template-columns: 1fr;
+  }
+
+  .composer {
+    display: flex;
+    flex-direction: column;
+    padding: 12px 16px 16px;
+  }
+
+  .composer-actions {
+    justify-content: flex-end;
+  }
 }
 </style>

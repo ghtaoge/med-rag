@@ -19,6 +19,7 @@ whoosh_index/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/package-lock.json
 
 # IDE
 .idea/

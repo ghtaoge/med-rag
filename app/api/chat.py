@@ -250,8 +250,10 @@ class ChatOrchestrator:
         条件：
         1. llm_fallback_enabled 配置为 False → 不兜底
         2. 检索结果为空 → 兜底
-        3. 最高 score < min_relevance_score → 兜底
-        4. 否则 → 正常 RAG 回答
+        3. 否则 → 正常 RAG 回答
+
+        注意：不根据 score 阈值判断，因为 RRF 融合分数是排名分数（约 0.01-0.03），
+        不反映绝对相关性。检索引擎返回结果即代表有匹配。
         """
 
         from app.core.config import get_config
@@ -263,10 +265,7 @@ class ChatOrchestrator:
         if not results:
             return True
 
-        max_score = max(r.score for r in results)
-        min_threshold = cfg["retrieval"]["min_relevance_score"]
-
-        return max_score < min_threshold
+        return False
 
     def _mark_llm_fallback_answer(self, answer: str) -> str:
         """在回答前插入 LLM 兜底标识。"""

@@ -25,15 +25,15 @@ def test_should_use_llm_fallback_empty_results():
 
 
 def test_should_use_llm_fallback_low_score():
-    """所有 score < min_relevance_score → 应兜底。"""
+    """RRF 分数虽低但有结果 → 不兜底（RRF 分数是排名分数，不代表相关性低）。"""
 
     orchestrator = ChatOrchestrator(None, None, None, None)
     results = [_make_result(0.03), _make_result(0.02)]
-    assert orchestrator._should_use_llm_fallback(results) is True
+    assert orchestrator._should_use_llm_fallback(results) is False
 
 
 def test_should_use_llm_fallback_high_score():
-    """最高 score >= min_relevance_score → 不兜底。"""
+    """有检索结果 → 不兜底。"""
 
     orchestrator = ChatOrchestrator(None, None, None, None)
     results = [_make_result(0.08), _make_result(0.06)]

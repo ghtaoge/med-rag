@@ -344,6 +344,7 @@ class ChatOrchestrator:
                 }
                 for s in session.sources
             ],
+            "source_type": session.source_type,
             "created_at": session.created_at.isoformat(),
         }
 

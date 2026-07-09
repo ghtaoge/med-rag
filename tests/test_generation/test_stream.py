@@ -66,3 +66,14 @@ def test_stream_done():
     event = streamer.stream_done("abc123")
     data = json.loads(event.split("data: ")[1].strip())
     assert data["session_id"] == "abc123"
+
+
+def test_stream_llm_fallback():
+    """llm_fallback 事件格式正确。"""
+
+    streamer = SSEStreamer()
+    event = streamer.stream_llm_fallback()
+    assert event.startswith("event: llm_fallback\n")
+    data = json.loads(event.split("data: ")[1].strip())
+    assert "notice" in data
+    assert "知识库" in data["notice"]

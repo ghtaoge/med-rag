@@ -23,6 +23,7 @@ class SSEStreamer:
     - intent: 意图识别结果
     - search_start: 检索开始
     - search_result: 检索完成（片段数量）
+    - llm_fallback: LLM 兜底标识
     - generation_start: LLM 生成开始
     - token: 流式 token
     - generation_end: 生成完成
@@ -51,6 +52,14 @@ class SSEStreamer:
 
         data = {"chunks": chunks, "top_score": top_score}
         return f"event: search_result\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def stream_llm_fallback(self) -> str:
+        """生成 llm_fallback SSE 事件 — 标识回答来自模型通用知识。"""
+
+        from app.generation.prompt_builder import LLM_FALLBACK_NOTICE
+
+        data = {"notice": f"⚠️ {LLM_FALLBACK_NOTICE}仅供参考"}
+        return f"event: llm_fallback\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     def stream_generation_start(self, model: str) -> str:
         """生成 generation_start SSE 事件。"""

@@ -17,4 +17,7 @@ class CsvLoader(DocumentLoader):
             raise ImportError("CSV 加载需要 pandas，请执行: pip install pandas")
 
         df = pd.read_csv(str(file_path), encoding="utf-8")
-        return df.to_markdown(index=False)
+        rows = ["| " + " | ".join(str(col) for col in df.columns) + " |"]
+        for row in df.itertuples(index=False, name=None):
+            rows.append("| " + " | ".join("" if value is None else str(value) for value in row) + " |")
+        return "\n".join(rows)

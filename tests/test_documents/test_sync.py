@@ -3,6 +3,8 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from app.documents.sync import DocumentSync, FileChange
 from app.core.models import DocumentChunk, ChunkMetadata
 
@@ -149,3 +151,76 @@ def test_remove_chunks_clears_index_state():
         sync._remove_chunks("test.txt")
 
         assert "test.txt" not in load_index_state(knowledge_dir)
+
+def _write_sync_fixture(path: Path) -> None:
+    repeated_text = "医疗文档内容用于同步测试，包含适应症、用药剂量和注意事项。" * 12
+    suffix = path.suffix.lower()
+
+    if suffix in {".txt", ".md"}:
+        prefix = "# 测试文档\n\n" if suffix == ".md" else ""
+        path.write_text(prefix + repeated_text, encoding="utf-8")
+        return
+
+    if suffix == ".csv":
+        path.write_text(
+            "字段,说明\n适应症," + repeated_text + "\n注意事项," + repeated_text,
+            encoding="utf-8",
+        )
+        return
+
+    if suffix == ".xlsx":
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "知识库"
+        sheet.append(["字段", "说明"])
+        sheet.append(["适应症", repeated_text])
+        sheet.append(["注意事项", repeated_text])
+        workbook.save(path)
+        return
+
+    if suffix == ".docx":
+        from docx import Document
+
+        document = Document()
+        document.add_heading("测试文档", level=1)
+        document.add_paragraph(repeated_text)
+        document.add_paragraph(repeated_text)
+        document.save(path)
+        return
+
+    if suffix == ".pptx":
+        from pptx import Presentation
+
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+        slide.shapes.title.text = "测试文档"
+        slide.placeholders[1].text = repeated_text
+        presentation.save(path)
+        return
+
+    raise AssertionError(f"Unsupported fixture suffix: {suffix}")
+
+
+@pytest.mark.parametrize("filename", [
+    "medical.txt",
+    "medical.md",
+    "medical.csv",
+    "medical.xlsx",
+    "medical.docx",
+    "medical.pptx",
+])
+def test_sync_file_supported_text_and_office_formats(filename):
+    """sync_file should process common uploaded formats, not just plain text."""
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file_path = Path(tmpdir) / filename
+        _write_sync_fixture(file_path)
+
+        sync = DocumentSync(knowledge_dir=Path(tmpdir))
+        count = sync.sync_file(filename)
+
+        assert count > 0
+        assert filename in sync.active_chunks
+        assert sync.active_chunks[filename][0].content.strip()

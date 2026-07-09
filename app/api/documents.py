@@ -16,6 +16,7 @@ from app.core.dependencies import (
 from app.core.exceptions import DocumentError, ValidationError
 from app.documents.sync import DocumentSync
 from app.documents.validator import DocumentValidator
+from app.documents.index_state import load_index_state, remove_index_state
 
 router = APIRouter(prefix="/api/v1/documents", tags=["文档管理"])
 
@@ -25,9 +26,8 @@ async def upload_document(
     file: UploadFile = File(..., description="上传文件"),
     config: dict = Depends(get_config_dep),
     validator: DocumentValidator = Depends(get_document_validator),
-    sync: DocumentSync = Depends(get_document_sync),
 ):
-    """上传文档 → 校验 → 同步入库。"""
+    """上传文档 → 校验 → 保存。索引写入由同步接口单独触发。"""
 
     # 保存文件到知识库目录
     knowledge_dir = Path(config["knowledge_dir"])
@@ -56,16 +56,11 @@ async def upload_document(
             "warnings": result.warnings,
         }
 
-    # 同步入库
-    try:
-        chunk_count = sync.sync_file(file.filename)
-    except Exception as e:
-        raise DocumentError(f"同步入库失败: {e}")
-
     return {
         "status": "accepted",
         "filename": file.filename,
-        "chunk_count": chunk_count,
+        "chunk_count": 0,
+        "in_index": False,
         "errors": result.errors,
         "warnings": result.warnings,
     }
@@ -141,12 +136,12 @@ async def validate_document(
 @router.get("/list")
 async def list_documents(
     config: dict = Depends(get_config_dep),
-    sync: DocumentSync = Depends(get_document_sync),
 ):
     """列出知识库中的所有文档及其 chunk 状态。"""
 
     knowledge_dir = Path(config["knowledge_dir"])
 
+    index_state = load_index_state(knowledge_dir)
     documents = []
     for file_path in sorted(knowledge_dir.glob("*")):
         if not file_path.is_file():
@@ -156,18 +151,19 @@ async def list_documents(
         if file_path.suffix.lower() not in supported_extensions():
             continue
 
-        chunk_count = len(sync.active_chunks.get(file_path.name, []))
+        state = index_state.get(file_path.name, {})
+        chunk_count = int(state.get("chunk_count") or 0)
         documents.append({
             "filename": file_path.name,
             "size": file_path.stat().st_size,
             "extension": file_path.suffix.lower(),
             "chunk_count": chunk_count,
-            "in_index": file_path.name in sync.active_chunks,
+            "in_index": chunk_count > 0,
         })
 
     return {
         "total_files": len(documents),
-        "total_chunks": sync.get_total_chunk_count(),
+        "total_chunks": sum(doc["chunk_count"] for doc in documents),
         "documents": documents,
     }
 
@@ -176,7 +172,6 @@ async def list_documents(
 async def delete_document(
     filename: str,
     config: dict = Depends(get_config_dep),
-    sync: DocumentSync = Depends(get_document_sync),
 ):
     """从知识库删除文档（文件 + 索引）。"""
 
@@ -186,11 +181,10 @@ async def delete_document(
     # 删除文件
     if file_path.exists():
         file_path.unlink()
+        remove_index_state(knowledge_dir, filename)
     else:
         raise ValidationError(f"文件不存在: {filename}")
 
-    # 删除索引中的 chunks
-    sync._remove_chunks(filename)
 
     return {
         "deleted": True,

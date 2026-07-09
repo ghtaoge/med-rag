@@ -2,8 +2,6 @@
   <div class="history-view page-shell">
     <header class="page-header">
       <div>
-        <p class="eyebrow">Session Archive</p>
-        <h2 class="page-title">历史记录</h2>
         <p class="page-subtitle">查看最近问答、置信度和引用数量，便于复盘知识库回答质量。</p>
       </div>
       <button class="btn btn-ghost" type="button" @click="chatStore.loadSessions()">

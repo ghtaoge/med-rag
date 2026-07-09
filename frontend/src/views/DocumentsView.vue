@@ -2,8 +2,6 @@
   <div class="documents-view page-shell">
     <header class="page-header document-header">
       <div>
-        <p class="eyebrow">文档中心</p>
-        <h2 class="page-title">文档管理</h2>
         <p class="page-subtitle">查看已上传文件、同步索引状态，并按单个文件写入向量数据库。</p>
       </div>
       <div class="toolbar">

@@ -102,3 +102,50 @@ def test_get_total_chunk_count():
         ],
     }
     assert sync.get_total_chunk_count() == 3
+
+
+def test_remove_unsynced_file_does_not_touch_indexes():
+    """Removing an uploaded-but-unsynced file should not call external indexes."""
+
+    class FailingIndex:
+        def delete_chunks(self, source):
+            raise AssertionError("external index should not be touched")
+
+    sync = DocumentSync(
+        knowledge_dir=Path("/tmp/nonexistent"),
+        milvus_store=FailingIndex(),
+        keyword_store=FailingIndex(),
+    )
+
+    sync._remove_chunks("uploaded-only.txt")
+
+
+def test_sync_file_persists_index_state():
+    """sync_file should persist chunk count for the lightweight document list."""
+
+    from app.documents.index_state import load_index_state
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir) / "test.txt"
+        test_file.write_text("medical document content " * 20, encoding="utf-8")
+
+        sync = DocumentSync(knowledge_dir=Path(tmpdir))
+        count = sync.sync_file("test.txt")
+
+        state = load_index_state(Path(tmpdir))
+        assert state["test.txt"]["chunk_count"] == count
+
+
+def test_remove_chunks_clears_index_state():
+    """_remove_chunks should clear persisted index state."""
+
+    from app.documents.index_state import load_index_state, set_index_state
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        knowledge_dir = Path(tmpdir)
+        set_index_state(knowledge_dir, "test.txt", 2)
+
+        sync = DocumentSync(knowledge_dir=knowledge_dir)
+        sync._remove_chunks("test.txt")
+
+        assert "test.txt" not in load_index_state(knowledge_dir)

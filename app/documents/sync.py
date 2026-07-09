@@ -11,6 +11,7 @@ from app.core.exceptions import DocumentError
 from app.core.models import DocumentChunk
 from app.documents.loader import load_document
 from app.documents.chunker import chunk_text, chunk_markdown
+from app.documents.index_state import set_index_state, remove_index_state
 
 config = get_config()
 
@@ -185,6 +186,7 @@ class DocumentSync:
 
         # 更新 Redis hash
         self._set_stored_hash(filename, self._file_hash(file_path))
+        set_index_state(self.knowledge_dir, filename, len(chunks))
 
         # Swap：从 staging 移到 active
         self.active_chunks[filename] = self.staging_chunks.pop(filename)
@@ -208,20 +210,24 @@ class DocumentSync:
     def _remove_chunks(self, filename: str) -> None:
         """删除指定文件的 chunks。"""
 
+        had_indexed_chunks = filename in self.active_chunks or filename in self.staging_chunks
+
         # 从活跃索引移除
         self.active_chunks.pop(filename, None)
         self.staging_chunks.pop(filename, None)
 
-        # 从向量库删除
-        if self.milvus_store is not None:
-            self.milvus_store.delete_chunks(filename)
+        if had_indexed_chunks:
+            # 从向量库删除
+            if self.milvus_store is not None:
+                self.milvus_store.delete_chunks(filename)
 
-        # 从关键词索引删除
-        if self.keyword_store is not None:
-            self.keyword_store.delete_chunks(filename)
+            # 从关键词索引删除
+            if self.keyword_store is not None:
+                self.keyword_store.delete_chunks(filename)
 
         # 从 Redis 删除 hash
         self._delete_stored_hash(filename)
+        remove_index_state(self.knowledge_dir, filename)
 
     def get_total_chunk_count(self) -> int:
         """获取活跃索引中的总 chunk 数。"""

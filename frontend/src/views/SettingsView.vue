@@ -2,8 +2,6 @@
   <div class="settings-view page-shell">
     <header class="page-header">
       <div>
-        <p class="eyebrow">系统配置</p>
-        <h2 class="page-title">系统设置</h2>
         <p class="page-subtitle">查看当前模型、检索组件、向量库和健康状态。敏感配置请通过环境变量管理。</p>
       </div>
       <button class="btn btn-ghost" type="button" @click="checkHealth">

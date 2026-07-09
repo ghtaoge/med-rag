@@ -2,8 +2,6 @@
   <div class="evaluation-view page-shell">
     <header class="page-header">
       <div>
-        <p class="eyebrow">Readiness</p>
-        <h2 class="page-title">效果评估</h2>
         <p class="page-subtitle">检查检索、知识库、生成与运行统计，快速判断系统是否具备上线条件。</p>
       </div>
       <button class="btn btn-primary" type="button" :disabled="loadingChecklist" @click="loadChecklist">
@@ -164,9 +162,6 @@ function statusTone(status) {
   margin-bottom: 4px;
 }
 
-.page-title {
-  font-size: 21px;
-}
 
 .page-subtitle {
   margin-top: 8px;

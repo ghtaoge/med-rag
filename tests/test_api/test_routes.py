@@ -105,3 +105,94 @@ def test_404_unknown_route():
 
     response = client.get("/unknown-route")
     assert response.status_code == 404
+
+
+def test_upload_document_does_not_sync_immediately(tmp_path):
+    """Uploading should save and validate only; indexing is triggered separately."""
+
+    from app.api.documents import get_config_dep, get_document_sync
+
+    class FailingSync:
+        def sync_file(self, filename):
+            raise RuntimeError("sync should not run during upload")
+
+    config = {
+        "knowledge_dir": str(tmp_path),
+    }
+
+    app.dependency_overrides[get_config_dep] = lambda: config
+    app.dependency_overrides[get_document_sync] = lambda: FailingSync()
+
+    try:
+        content = b"medical document content " * 8
+        response = client.post(
+            "/api/v1/documents/upload",
+            files={"file": ("medical.txt", content, "text/plain")},
+        )
+    finally:
+        app.dependency_overrides.pop(get_config_dep, None)
+        app.dependency_overrides.pop(get_document_sync, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "accepted"
+    assert data["filename"] == "medical.txt"
+    assert data["chunk_count"] == 0
+    assert (tmp_path / "medical.txt").exists()
+
+
+def test_delete_uploaded_unsynced_document_does_not_initialize_sync(tmp_path):
+    """Deleting an uploaded-only file should not require the sync dependency."""
+
+    from app.api.documents import get_config_dep, get_document_sync
+
+    test_file = tmp_path / "uploaded-only.txt"
+    test_file.write_text("medical document content" * 8, encoding="utf-8")
+
+    def fail_sync_dependency():
+        raise AssertionError("sync dependency should not be initialized")
+
+    app.dependency_overrides[get_config_dep] = lambda: {"knowledge_dir": str(tmp_path)}
+    app.dependency_overrides[get_document_sync] = fail_sync_dependency
+
+    try:
+        response = client.delete("/api/v1/documents/uploaded-only.txt")
+    finally:
+        app.dependency_overrides.pop(get_config_dep, None)
+        app.dependency_overrides.pop(get_document_sync, None)
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert not test_file.exists()
+
+
+def test_documents_list_does_not_initialize_sync(tmp_path):
+    """Listing uploaded files should not initialize vector or keyword indexes."""
+
+    from app.api.documents import get_config_dep, get_document_sync
+
+    (tmp_path / "medical.txt").write_text("medical document content" * 8, encoding="utf-8")
+    (tmp_path / ".med-rag-index-state.json").write_text(
+        '{"medical.txt": {"chunk_count": 3}}',
+        encoding="utf-8",
+    )
+
+    def fail_sync_dependency():
+        raise AssertionError("sync dependency should not be initialized")
+
+    app.dependency_overrides[get_config_dep] = lambda: {"knowledge_dir": str(tmp_path)}
+    app.dependency_overrides[get_document_sync] = fail_sync_dependency
+
+    try:
+        response = client.get("/api/v1/documents/list")
+    finally:
+        app.dependency_overrides.pop(get_config_dep, None)
+        app.dependency_overrides.pop(get_document_sync, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_files"] == 1
+    assert data["total_chunks"] == 3
+    assert data["documents"][0]["filename"] == "medical.txt"
+    assert data["documents"][0]["chunk_count"] == 3
+    assert data["documents"][0]["in_index"] is True

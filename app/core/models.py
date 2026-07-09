@@ -101,4 +101,5 @@ class QaSession:
     sources: list[SearchResult] = field(default_factory=list)
     intent: IntentResult | None = None
     correctness: CorrectnessResult | None = None
+    source_type: str = "knowledge_base"  # "knowledge_base" | "llm_fallback" | "no_result"
     created_at: datetime = field(default_factory=datetime.now)

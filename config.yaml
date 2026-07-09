@@ -36,6 +36,8 @@ retrieval:
   keyword_top_k: 20
   rrf_k: 60
   rerank_top_k: 5
+  min_relevance_score: 0.05
+  llm_fallback_enabled: true
 
 llm:
   provider: deepseek

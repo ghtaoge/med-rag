@@ -41,9 +41,10 @@ def test_chat_complete_endpoint_exists():
 def test_chat_stream_endpoint_exists():
     """流式问答端点可访问。"""
 
-    response = client.post("/api/v1/chat/stream?question=测试问题")
-    # SSE 流式端点存在
+    response = client.get("/api/v1/chat/stream?question=测试问题")
+    # EventSource uses GET, so the SSE endpoint must not be POST-only.
     assert response.status_code != 404
+    assert response.status_code != 405
 
 
 def test_sessions_list_endpoint():
@@ -54,6 +55,65 @@ def test_sessions_list_endpoint():
     assert response.status_code == 200
     data = response.json()
     assert "sessions" in data
+
+
+def test_sessions_persist_without_redis(tmp_path):
+    """History should still work when Redis is unavailable."""
+
+    from datetime import datetime
+
+    from app.api.chat import ChatOrchestrator
+    from app.core.models import (
+        ConfidenceLevel,
+        CorrectnessResult,
+        IntentCategory,
+        IntentResult,
+        QaSession,
+    )
+
+    store_path = tmp_path / ".med-rag-sessions.json"
+    orchestrator = ChatOrchestrator(
+        None,
+        None,
+        None,
+        None,
+        redis_client=None,
+        session_store_path=store_path,
+    )
+    session = QaSession(
+        session_id="local-session-1",
+        question="历史记录测试",
+        answer="可以保存",
+        intent=IntentResult(
+            category=IntentCategory.QUERY,
+            confidence=0.9,
+            method="rule",
+        ),
+        correctness=CorrectnessResult(
+            confidence=ConfidenceLevel.HIGH,
+            score=0.8,
+            source_count=0,
+        ),
+        source_type="knowledge_base",
+        created_at=datetime(2026, 7, 9, 10, 0, 0),
+    )
+
+    orchestrator._save_session(session)
+
+    reloaded = ChatOrchestrator(
+        None,
+        None,
+        None,
+        None,
+        redis_client=None,
+        session_store_path=store_path,
+    )
+    sessions = reloaded.list_sessions()
+
+    assert sessions[0]["session_id"] == "local-session-1"
+    assert reloaded.get_session("local-session-1")["answer"] == "可以保存"
+    assert reloaded.delete_session("local-session-1") is True
+    assert reloaded.list_sessions() == []
 
 
 def test_documents_list_endpoint():
@@ -107,21 +167,26 @@ def test_404_unknown_route():
     assert response.status_code == 404
 
 
-def test_upload_document_does_not_sync_immediately(tmp_path):
-    """Uploading should save and validate only; indexing is triggered separately."""
+def test_upload_document_syncs_immediately(tmp_path):
+    """Uploading should save, validate, and immediately sync the uploaded file."""
 
     from app.api.documents import get_config_dep, get_document_sync
 
-    class FailingSync:
-        def sync_file(self, filename):
-            raise RuntimeError("sync should not run during upload")
+    class RecordingSync:
+        def __init__(self):
+            self.synced_filename = ""
+
+        def sync_file(self, filename, force=False):
+            self.synced_filename = filename
+            return 2
 
     config = {
         "knowledge_dir": str(tmp_path),
     }
 
     app.dependency_overrides[get_config_dep] = lambda: config
-    app.dependency_overrides[get_document_sync] = lambda: FailingSync()
+    sync = RecordingSync()
+    app.dependency_overrides[get_document_sync] = lambda: sync
 
     try:
         content = b"medical document content " * 8
@@ -137,7 +202,9 @@ def test_upload_document_does_not_sync_immediately(tmp_path):
     data = response.json()
     assert data["status"] == "accepted"
     assert data["filename"] == "medical.txt"
-    assert data["chunk_count"] == 0
+    assert data["chunk_count"] == 2
+    assert data["in_index"] is True
+    assert sync.synced_filename == "medical.txt"
     assert (tmp_path / "medical.txt").exists()
 
 

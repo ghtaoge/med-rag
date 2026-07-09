@@ -28,6 +28,10 @@ export function chatStream(question, callbacks) {
     callbacks.onSearchResult?.(JSON.parse(e.data))
   })
 
+  eventSource.addEventListener('llm_fallback', (e) => {
+    callbacks.onLlmFallback?.(JSON.parse(e.data))
+  })
+
   eventSource.addEventListener('generation_start', (e) => {
     callbacks.onGenerationStart?.(JSON.parse(e.data))
   })
@@ -50,7 +54,10 @@ export function chatStream(question, callbacks) {
   })
 
   eventSource.addEventListener('error', (e) => {
-    callbacks.onError?.(JSON.parse(e.data))
+    const data = e.data
+      ? JSON.parse(e.data)
+      : { code: 'CONNECTION_ERROR', message: '连接断开' }
+    callbacks.onError?.(data)
     eventSource.close()
   })
 

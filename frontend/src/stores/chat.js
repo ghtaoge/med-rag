@@ -6,6 +6,7 @@ export const useChatStore = defineStore('chat', {
     question: '',
     answer: '',
     isStreaming: false,
+    isLlmFallback: false,
     sources: [],
     intent: null,
     correctness: null,
@@ -18,6 +19,7 @@ export const useChatStore = defineStore('chat', {
     startStream(question) {
       this.question = question
       this.answer = ''
+      this.isLlmFallback = false
       this.sources = []
       this.intent = null
       this.correctness = null
@@ -33,6 +35,9 @@ export const useChatStore = defineStore('chat', {
         onSearchResult: (data) => {
           // 检索完成
         },
+        onLlmFallback: (data) => {
+          this.isLlmFallback = true
+        },
         onGenerationStart: (data) => {
           // LLM 生成开始
         },
@@ -40,7 +45,10 @@ export const useChatStore = defineStore('chat', {
           this.answer += data.content
         },
         onGenerationEnd: (data) => {
-          this.sources = data.sources || []
+          this.sources = (data.sources || []).map(source => ({
+            ...source,
+            content_preview: source.content_preview || source.content || '',
+          }))
         },
         onCorrectness: (data) => {
           this.correctness = data
@@ -84,6 +92,7 @@ export const useChatStore = defineStore('chat', {
     clearChat() {
       this.question = ''
       this.answer = ''
+      this.isLlmFallback = false
       this.sources = []
       this.intent = null
       this.correctness = null

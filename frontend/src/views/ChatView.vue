@@ -2,6 +2,7 @@
   <div class="chat-view page-shell">
     <section class="chat-workspace panel">
       <div class="chat-main">
+        <div class="chat-content" ref="messagesRef" @scroll="handleMessagesScroll">
         <div class="welcome-strip" v-if="!chatStore.question && !chatStore.answer && !chatStore.isStreaming">
           <div class="welcome-copy">
             <div class="welcome-title-row">
@@ -31,11 +32,15 @@
           </button>
         </div>
 
-        <div class="messages" ref="messagesRef">
+        <div class="messages">
           <article v-if="chatStore.question" class="message-row user">
             <div class="avatar"><UserRound :size="17" /></div>
             <div class="bubble">{{ chatStore.question }}</div>
           </article>
+
+          <div v-if="chatStore.isLlmFallback" class="llm-fallback-notice">
+            ⚠️ 知识库中未检索到相关内容，以下为模型基于通用知识的回答，仅供参考
+          </div>
 
           <div v-if="chatStore.intent" class="intent-line">
             <span class="badge" :class="intentClass">
@@ -59,6 +64,7 @@
             <LoaderCircle :size="16" class="spin" />
             正在检索相关资料
           </div>
+        </div>
         </div>
 
         <form class="composer" @submit.prevent="handleSubmit">
@@ -155,7 +161,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
 import MarkdownIt from 'markdown-it'
 import {
@@ -180,6 +186,7 @@ const md = new MarkdownIt({ html: false, breaks: true })
 const chatStore = useChatStore()
 const inputQuestion = ref('')
 const messagesRef = ref(null)
+const shouldAutoScroll = ref(true)
 
 const exampleQuestions = [
   { text: '阿司匹林的适应症有哪些？', icon: Pill },
@@ -233,12 +240,41 @@ function ask(question) {
   handleSubmit()
 }
 
+function scrollMessagesToBottom(force = false) {
+  nextTick(() => {
+    const el = messagesRef.value
+    if (!el || (!force && !shouldAutoScroll.value)) return
+    el.scrollTop = el.scrollHeight
+  })
+}
+
+function handleMessagesScroll() {
+  const el = messagesRef.value
+  if (!el) return
+  const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  shouldAutoScroll.value = distanceToBottom < 80
+}
+
 function handleSubmit() {
   const question = inputQuestion.value.trim()
   if (!question || chatStore.isStreaming) return
+  shouldAutoScroll.value = true
   chatStore.startStream(question)
   inputQuestion.value = ''
+  scrollMessagesToBottom(true)
 }
+
+watch(
+  () => [
+    chatStore.question,
+    chatStore.answer,
+    chatStore.intent,
+    chatStore.correctness,
+    chatStore.isStreaming,
+  ],
+  () => scrollMessagesToBottom(),
+  { flush: 'post' },
+)
 </script>
 
 <style scoped>
@@ -265,6 +301,16 @@ function handleSubmit() {
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);
+  overflow: hidden;
+}
+
+.chat-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  scrollbar-gutter: stable;
 }
 
 .welcome-strip {
@@ -363,12 +409,20 @@ function handleSubmit() {
   color: var(--text-primary);
 }
 
+.llm-fallback-notice {
+  margin: 0 20px 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--amber);
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--amber);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.6;
+}
+
 .messages {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
   padding: 16px 20px;
-  scroll-behavior: smooth;
 }
 
 .message-row {

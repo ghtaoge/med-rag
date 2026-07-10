@@ -52,6 +52,8 @@ def get_redis_client() -> redis.Redis | None:
             port=cfg["redis"]["port"],
             db=cfg["redis"]["db"],
             decode_responses=True,
+            socket_connect_timeout=1,
+            socket_timeout=1,
         )
         client.ping()  # 验证连接
         logger.info("redis_connected", host=cfg["redis"]["host"], port=cfg["redis"]["port"])

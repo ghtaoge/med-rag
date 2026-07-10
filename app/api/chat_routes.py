@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
-from app.core.dependencies import get_chat_orchestrator, get_config_dep
+from app.core.dependencies import get_chat_orchestrator
 from app.core.exceptions import MedRagError
-from app.api.chat import ChatOrchestrator
 
 router = APIRouter(prefix="/api/v1/chat", tags=["问答"])
 
 
-@router.post("/stream")
+@router.api_route("/stream", methods=["GET", "POST"])
 async def chat_stream(
     question: str = Query(..., description="用户问题"),
-    orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
 ):
     """流式问答 — SSE 事件流。
 
@@ -23,7 +23,10 @@ async def chat_stream(
     """
 
     async def event_generator():
+        yield ": connected\n\n"
+        await asyncio.sleep(0)
         try:
+            orchestrator = get_chat_orchestrator()
             stream = orchestrator.chat_stream(question)
             async for event in stream:
                 yield event

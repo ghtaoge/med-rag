@@ -52,3 +52,20 @@ def test_rule_classifier_multiple_keywords():
     # 第一个命中的优先
     assert result.category in [IntentCategory.DEFINITION, IntentCategory.PROCESS]
     assert result.confidence >= 0.8
+
+
+def test_classifier_uses_rule_fallback_inside_async_loop():
+    """同步 classify 在异步请求链路中不应调用 async LLM 协程。"""
+
+    import asyncio
+
+    class AsyncOnlyLlm:
+        async def generate(self, prompt):
+            raise AssertionError("async llm should not be called from classify() in a running loop")
+
+    async def run():
+        result = IntentClassifier(llm_engine=AsyncOnlyLlm()).classify("商品")
+        assert result.category == IntentCategory.QUERY
+        assert result.method == "rule"
+
+    asyncio.run(run())

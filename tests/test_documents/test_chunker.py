@@ -30,6 +30,17 @@ def test_chunk_text_short_text():
     assert chunks[0].content == "短文本"
 
 
+def test_chunk_text_splits_oversized_table_like_paragraph():
+    """chunk_text should split long table-like text emitted by Excel loaders."""
+
+    text = "\n".join([f"| 商品{i} | 规格{i} | " + "说明" * 80 + " |" for i in range(12)])
+
+    chunks = chunk_text(text, source="large.xlsx", min_size=10, max_size=300, overlap=0)
+
+    assert len(chunks) > 1
+    assert all(len(chunk.content) <= 300 for chunk in chunks)
+
+
 def test_chunk_markdown_preserves_headings():
     """chunk_markdown 按标题层级切块。"""
 

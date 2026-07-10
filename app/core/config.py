@@ -12,9 +12,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 CONFIG_FILE = BASE_DIR / "config.yaml"
+ENV_FILE = BASE_DIR / ".env"
 
 DEFAULTS: dict[str, Any] = {
     "app": {
@@ -53,6 +55,8 @@ DEFAULTS: dict[str, Any] = {
         "keyword_top_k": 20,
         "rrf_k": 60,
         "rerank_top_k": 5,
+        "min_relevance_score": 0.05,
+        "llm_fallback_enabled": True,
     },
     "llm": {
         "provider": "deepseek",
@@ -89,6 +93,8 @@ ENV_MAPPINGS: dict[str, tuple[str, str | None]] = {
     "RAG_LLM_PROVIDER": ("llm", "provider"),
     "RAG_LOG_LEVEL": ("", "log_level"),
     "RAG_KNOWLEDGE_DIR": ("", "knowledge_dir"),
+    "RAG_MIN_RELEVANCE_SCORE": ("retrieval", "min_relevance_score"),
+    "RAG_LLM_FALLBACK_ENABLED": ("retrieval", "llm_fallback_enabled"),
     "DEEPSEEK_API_KEY": ("llm.deepseek", "api_key"),
     "QWEN_API_KEY": ("llm.qwen", "api_key"),
     "ZHIPU_API_KEY": ("llm.zhipu", "api_key"),
@@ -113,17 +119,24 @@ INT_FIELDS: list[tuple[str, str]] = [
     ("chunker", "max_chunk_size"),
     ("chunker", "overlap"),
     ("app", "port"),
+    ("llm", "max_tokens"),
 ]
 
 # 需要强制转 float 的字段
 FLOAT_FIELDS: list[tuple[str, str]] = [
     ("llm", "temperature"),
-    ("llm", "max_tokens"),
+    ("retrieval", "min_relevance_score"),
+]
+
+BOOL_FIELDS: list[tuple[str, str]] = [
+    ("retrieval", "llm_fallback_enabled"),
 ]
 
 
 def load_config() -> dict[str, Any]:
     """加载配置：合并默认值 + YAML 文件 + 环境变量。"""
+
+    load_dotenv(ENV_FILE, override=False)
 
     config = copy.deepcopy(DEFAULTS)
 
@@ -149,6 +162,11 @@ def load_config() -> dict[str, Any]:
         val = _get_nested(config, section, key)
         if val is not None:
             _set_nested(config, section, key, float(val))
+
+    for section, key in BOOL_FIELDS:
+        val = _get_nested(config, section, key)
+        if val is not None:
+            _set_nested(config, section, key, _to_bool(val))
 
     return config
 
@@ -199,3 +217,15 @@ def _get_nested(config: dict, section: str, key: str) -> Any | None:
             return None
         target = target[part]
     return target.get(key)
+
+
+def _to_bool(value: Any) -> bool:
+    """Convert YAML/env values to bool."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)

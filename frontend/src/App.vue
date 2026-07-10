@@ -1,5 +1,10 @@
 <template>
-  <div class="app-frame" :data-theme="theme">
+  <div
+    class="app-frame"
+    :class="{ 'sidebar-collapsed': isSidebarCollapsed, 'sidebar-resizing': isSidebarResizing }"
+    :data-theme="theme"
+    :style="frameStyle"
+  >
     <aside class="app-sidebar">
       <button class="brand" type="button" @click="go('/chat')" aria-label="Med-Rag 首页">
         <span class="brand-mark" aria-hidden="true">
@@ -14,6 +19,16 @@
           <small>医疗知识库助手</small>
         </span>
       </button>
+      <button
+        class="sidebar-toggle"
+        type="button"
+        :aria-label="isSidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+        :title="isSidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+        @click="toggleSidebar"
+      >
+        <PanelLeftOpen v-if="isSidebarCollapsed" :size="17" />
+        <PanelLeftClose v-else :size="17" />
+      </button>
 
       <nav class="nav-list" aria-label="主导航">
         <button
@@ -25,7 +40,7 @@
           @click="go(item.path)"
         >
           <span class="nav-icon"><component :is="item.icon" :size="18" /></span>
-          <span>{{ item.label }}</span>
+          <span class="nav-label">{{ item.label }}</span>
         </button>
       </nav>
 
@@ -38,6 +53,14 @@
           </div>
         </div>
       </div>
+      <div
+        v-if="!isSidebarCollapsed"
+        class="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        title="拖动调整侧边栏宽度"
+        @pointerdown="startSidebarResize"
+      ></div>
     </aside>
 
     <main class="app-main">
@@ -65,6 +88,8 @@ import {
   Files,
   MessageSquareText,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
   Settings,
   Sun,
 } from 'lucide-vue-next'
@@ -74,6 +99,14 @@ const route = useRoute()
 const theme = ref('dark')
 const themeKey = 'med-rag-theme'
 const themeTouchedKey = 'med-rag-theme-touched'
+const sidebarWidthKey = 'med-rag-sidebar-width'
+const sidebarCollapsedKey = 'med-rag-sidebar-collapsed'
+const sidebarWidth = ref(280)
+const isSidebarCollapsed = ref(false)
+const isSidebarResizing = ref(false)
+const minSidebarWidth = 220
+const maxSidebarWidth = 420
+const collapsedSidebarWidth = 72
 
 const navItems = [
   { path: '/chat', label: '智能问答', icon: MessageSquareText },
@@ -84,6 +117,9 @@ const navItems = [
 ]
 
 const activeRoute = computed(() => route.path)
+const frameStyle = computed(() => ({
+  '--sidebar-width': `${isSidebarCollapsed.value ? collapsedSidebarWidth : sidebarWidth.value}px`,
+}))
 
 onMounted(() => {
   const saved = window.localStorage.getItem(themeKey)
@@ -91,6 +127,14 @@ onMounted(() => {
   if (touched && (saved === 'light' || saved === 'dark')) {
     theme.value = saved
   }
+  const savedWidthValue = window.localStorage.getItem(sidebarWidthKey)
+  if (savedWidthValue !== null) {
+    const savedWidth = Number(savedWidthValue)
+    if (Number.isFinite(savedWidth)) {
+      sidebarWidth.value = clampSidebarWidth(savedWidth)
+    }
+  }
+  isSidebarCollapsed.value = window.localStorage.getItem(sidebarCollapsedKey) === '1'
   applyTheme(theme.value)
 })
 
@@ -111,14 +155,55 @@ function toggleTheme() {
 function go(path) {
   if (route.path !== path) router.push(path)
 }
+
+function clampSidebarWidth(value) {
+  return Math.min(maxSidebarWidth, Math.max(minSidebarWidth, Math.round(value)))
+}
+
+function toggleSidebar() {
+  isSidebarCollapsed.value = !isSidebarCollapsed.value
+  window.localStorage.setItem(sidebarCollapsedKey, isSidebarCollapsed.value ? '1' : '0')
+}
+
+function startSidebarResize(event) {
+  if (isSidebarCollapsed.value) return
+  event.preventDefault()
+  isSidebarResizing.value = true
+
+  const startX = event.clientX
+  const startWidth = sidebarWidth.value
+
+  const handleMove = (moveEvent) => {
+    sidebarWidth.value = clampSidebarWidth(startWidth + moveEvent.clientX - startX)
+  }
+
+  const handleUp = () => {
+    isSidebarResizing.value = false
+    window.localStorage.setItem(sidebarWidthKey, String(sidebarWidth.value))
+    window.removeEventListener('pointermove', handleMove)
+    window.removeEventListener('pointerup', handleUp)
+    window.removeEventListener('pointercancel', handleUp)
+  }
+
+  window.addEventListener('pointermove', handleMove)
+  window.addEventListener('pointerup', handleUp)
+  window.addEventListener('pointercancel', handleUp)
+}
 </script>
 
 <style scoped>
 .app-frame {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 280px) minmax(0, 1fr);
   background: var(--bg-primary);
+  transition: grid-template-columns 0.18s ease;
+}
+
+.app-frame.sidebar-resizing {
+  cursor: col-resize;
+  user-select: none;
+  transition: none;
 }
 
 .app-sidebar {
@@ -130,19 +215,40 @@ function go(path) {
   padding: 16px;
   border-right: 1px solid var(--border-color);
   background: var(--bg-secondary);
+  overflow: visible;
+  transition: padding 0.18s ease;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  width: 100%;
+  width: calc(100% - 40px);
   min-height: 42px;
   padding: 0 0 14px;
   border-bottom: 1px solid var(--border-color);
   color: var(--text-primary);
   background: transparent;
   text-align: left;
+}
+
+.sidebar-toggle {
+  position: absolute;
+  top: 16px;
+  right: 12px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+}
+
+.sidebar-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
 }
 
 .brand-mark {
@@ -280,6 +386,14 @@ function go(path) {
   color: var(--text-tertiary);
 }
 
+.nav-label,
+.brand > span:last-child,
+.sidebar-status div {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .nav-item.active .nav-icon {
   color: var(--accent-color);
 }
@@ -290,6 +404,63 @@ function go(path) {
   gap: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--border-color);
+}
+
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resizer::after {
+  position: absolute;
+  content: '';
+  top: 0;
+  left: 3px;
+  width: 2px;
+  height: 100%;
+  background: transparent;
+  transition: background 0.18s ease;
+}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizing .sidebar-resizer::after {
+  background: var(--accent-color);
+}
+
+.sidebar-collapsed .app-sidebar {
+  align-items: center;
+  padding: 16px 10px;
+}
+
+.sidebar-collapsed .brand {
+  width: 100%;
+  justify-content: center;
+  padding-bottom: 12px;
+}
+
+.sidebar-collapsed .brand > span:last-child,
+.sidebar-collapsed .nav-label,
+.sidebar-collapsed .sidebar-bottom {
+  display: none;
+}
+
+.sidebar-collapsed .sidebar-toggle {
+  position: static;
+  margin-top: 8px;
+}
+
+.sidebar-collapsed .nav-list {
+  width: 100%;
+}
+
+.sidebar-collapsed .nav-item {
+  justify-content: center;
+  padding: 0;
 }
 
 .tool-icon {

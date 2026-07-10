@@ -11,6 +11,38 @@ import re
 from app.core.models import DocumentChunk, ChunkMetadata, ChunkType
 
 
+def _split_long_paragraph(paragraph: str, max_size: int) -> list[str]:
+    """Split one oversized paragraph so storage field limits are never exceeded."""
+
+    if len(paragraph) <= max_size:
+        return [paragraph]
+
+    segments: list[str] = []
+    lines = paragraph.splitlines()
+    current = ""
+
+    for line in lines:
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) <= max_size:
+            current = candidate
+            continue
+
+        if current:
+            segments.append(current)
+            current = ""
+
+        while len(line) > max_size:
+            segments.append(line[:max_size])
+            line = line[max_size:]
+
+        current = line
+
+    if current:
+        segments.append(current)
+
+    return segments
+
+
 def chunk_text(
     text: str,
     source: str,
@@ -24,7 +56,12 @@ def chunk_text(
     短段落合并到 min_size 以上。
     """
 
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    paragraphs = [
+        segment
+        for paragraph in text.split("\n\n")
+        for segment in _split_long_paragraph(paragraph.strip(), max_size)
+        if segment.strip()
+    ]
 
     chunks: list[DocumentChunk] = []
     current_text = ""
@@ -46,7 +83,9 @@ def chunk_text(
             )
             chunk_index += 1
             # overlap：保留最后 overlap 个字符
-            overlap_text = current_text[-overlap:] if overlap > 0 else ""
+            remaining_capacity = max_size - len(para) - 2
+            overlap_size = min(overlap, max(0, remaining_capacity))
+            overlap_text = current_text[-overlap_size:] if overlap_size > 0 else ""
             current_text = overlap_text + "\n\n" + para
         else:
             current_text = (

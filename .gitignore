@@ -16,6 +16,7 @@ build/
 whoosh_index/
 .med-rag-index-state.json
 data/.med-rag-index-state.json
+data/.med-rag-sessions.json
 
 # 前端
 frontend/node_modules/

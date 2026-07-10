@@ -26,8 +26,9 @@ async def upload_document(
     file: UploadFile = File(..., description="上传文件"),
     config: dict = Depends(get_config_dep),
     validator: DocumentValidator = Depends(get_document_validator),
+    sync: DocumentSync = Depends(get_document_sync),
 ):
-    """上传文档 → 校验 → 保存。索引写入由同步接口单独触发。"""
+    """上传文档 → 校验 → 保存 → 自动同步索引。"""
 
     # 保存文件到知识库目录
     knowledge_dir = Path(config["knowledge_dir"])
@@ -56,11 +57,16 @@ async def upload_document(
             "warnings": result.warnings,
         }
 
+    try:
+        chunk_count = sync.sync_file(file.filename, force=True)
+    except Exception as e:
+        raise DocumentError(f"文件已保存，但同步索引失败: {e}")
+
     return {
         "status": "accepted",
         "filename": file.filename,
-        "chunk_count": 0,
-        "in_index": False,
+        "chunk_count": chunk_count,
+        "in_index": chunk_count > 0,
         "errors": result.errors,
         "warnings": result.warnings,
     }

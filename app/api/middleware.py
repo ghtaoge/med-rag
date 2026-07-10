@@ -5,9 +5,9 @@ from __future__ import annotations
 import time
 import traceback
 
-from fastapi import Request, Response
+from fastapi import Request
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.exceptions import MedRagError
 from app.core.logging import get_logger
@@ -15,41 +15,51 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-class RequestLoggingMiddleware(BaseHTTPMiddleware):
+class RequestLoggingMiddleware:
     """请求日志中间件。记录每个请求的路径、方法、耗时。"""
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         start_time = time.time()
+        path = scope.get("path", "")
+        method = scope.get("method", "")
+        status_code = 500
 
-        # 跳过健康检查的详细日志
-        path = request.url.path
-        method = request.method
+        async def send_wrapper(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
 
-        response = await call_next(request)
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            duration_ms = (time.time() - start_time) * 1000
 
-        duration_ms = (time.time() - start_time) * 1000
-
-        logger.info(
-            "api_request",
-            method=method,
-            path=path,
-            status=response.status_code,
-            duration_ms=round(duration_ms, 2),
-        )
-
-        # 慢请求告警
-        if duration_ms > 5000:
-            logger.warning(
-                "slow_request",
+            logger.info(
+                "api_request",
                 method=method,
                 path=path,
+                status=status_code,
                 duration_ms=round(duration_ms, 2),
             )
 
-        return response
+            if duration_ms > 5000:
+                logger.warning(
+                    "slow_request",
+                    method=method,
+                    path=path,
+                    duration_ms=round(duration_ms, 2),
+                )
 
 
-class RateLimitMiddleware(BaseHTTPMiddleware):
+class RateLimitMiddleware:
     """简单限速中间件。
 
     基于 IP + 路径的滑动窗口限速。
@@ -67,23 +77,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     DEFAULT_LIMIT = (60, 60)  # 60次/分钟
 
     def __init__(self, app, redis_client=None):
-        super().__init__(app)
+        self.app = app
         self.redis_client = redis_client
         # 无 Redis 时使用内存限速（单进程有效）
         self._in_memory_counts: dict[str, list[float]] = {}
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        path = request.url.path
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
 
         # 非限速路径直接放行
         if not path.startswith("/api/"):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         # 获取限速配置
         max_requests, window = self.RATE_LIMITS.get(path, self.DEFAULT_LIMIT)
 
         # 限速键
-        client_ip = request.client.host if request.client else "unknown"
+        client = scope.get("client")
+        client_ip = client[0] if client else "unknown"
         rate_key = f"{client_ip}:{path}"
 
         # Redis 限速
@@ -95,13 +111,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
             current = self.redis_client.get(redis_key)
             if current and int(current) >= max_requests:
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=429,
                     content={
                         "code": "RATE_LIMIT_EXCEEDED",
                         "message": f"请求过于频繁，{path} 限制 {max_requests}次/{window}秒",
                     },
                 )
+                await response(scope, receive, send)
+                return
 
             # 使用 Redis INCR + EXPIRE
             pipe = self.redis_client.pipeline()
@@ -116,17 +134,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # 清除过期记录
             counts = [t for t in counts if now - t < window]
             if len(counts) >= max_requests:
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=429,
                     content={
                         "code": "RATE_LIMIT_EXCEEDED",
                         "message": f"请求过于频繁，{path} 限制 {max_requests}次/{window}秒",
                     },
                 )
+                await response(scope, receive, send)
+                return
             counts.append(now)
             self._in_memory_counts[rate_key] = counts
 
-        return await call_next(request)
+        await self.app(scope, receive, send)
 
 
 async def med_rag_exception_handler(request: Request, exc: MedRagError) -> JSONResponse:

@@ -30,6 +30,16 @@ class IntentClassifier:
         # LLM 模式（如果可用）
         if self.llm_engine is not None:
             try:
+                # classify() is called from both sync and async request paths.
+                # Avoid blocking or leaking an un-awaited coroutine inside an active event loop.
+                import asyncio
+
+                asyncio.get_running_loop()
+                return rule_result
+            except RuntimeError:
+                pass
+
+            try:
                 llm_result = self._llm_classify(question)
                 return llm_result
             except Exception:

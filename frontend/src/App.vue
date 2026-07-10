@@ -104,6 +104,7 @@ const sidebarCollapsedKey = 'med-rag-sidebar-collapsed'
 const sidebarWidth = ref(280)
 const isSidebarCollapsed = ref(false)
 const isSidebarResizing = ref(false)
+// 侧边栏宽度限制要和 CSS 网格配合：太窄会挤压导航文字，太宽会侵占问答区。
 const minSidebarWidth = 220
 const maxSidebarWidth = 420
 const collapsedSidebarWidth = 72
@@ -122,11 +123,14 @@ const frameStyle = computed(() => ({
 }))
 
 onMounted(() => {
+  // 主题只有在用户主动切换过后才从 localStorage 恢复，
+  // 避免首次打开页面时被旧浏览器残留值影响默认暗色体验。
   const saved = window.localStorage.getItem(themeKey)
   const touched = window.localStorage.getItem(themeTouchedKey) === '1'
   if (touched && (saved === 'light' || saved === 'dark')) {
     theme.value = saved
   }
+  // 恢复上次拖拽后的宽度，并重新 clamp 一次，防止未来调整 min/max 后出现异常布局。
   const savedWidthValue = window.localStorage.getItem(sidebarWidthKey)
   if (savedWidthValue !== null) {
     const savedWidth = Number(savedWidthValue)
@@ -170,6 +174,7 @@ function startSidebarResize(event) {
   event.preventDefault()
   isSidebarResizing.value = true
 
+  // 记录拖拽起点，后续只用鼠标位移计算宽度，避免连续赋值带来的累计误差。
   const startX = event.clientX
   const startWidth = sidebarWidth.value
 
@@ -179,6 +184,7 @@ function startSidebarResize(event) {
 
   const handleUp = () => {
     isSidebarResizing.value = false
+    // 只在拖拽结束时持久化，移动过程中保持 UI 响应即可，减少频繁写 localStorage。
     window.localStorage.setItem(sidebarWidthKey, String(sidebarWidth.value))
     window.removeEventListener('pointermove', handleMove)
     window.removeEventListener('pointerup', handleUp)

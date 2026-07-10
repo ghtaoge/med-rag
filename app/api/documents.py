@@ -38,6 +38,8 @@ async def upload_document(
     if dest_path.exists():
         raise ValidationError(f"文件已存在: {file.filename}")
 
+    # 先落盘再校验：校验器按路径读取文件，不直接消费 UploadFile 流。
+    # 如果后续校验失败，会在下面主动删除刚保存的文件，避免无效文件留在知识库目录。
     # 保存上传文件
     try:
         with open(dest_path, "wb") as f:
@@ -58,8 +60,11 @@ async def upload_document(
         }
 
     try:
+        # 上传成功后立即同步当前文件，前端无需再手动点击“同步”。
+        # force=True 用于覆盖旧索引状态，保证 Excel 等同名内容更新后能马上进入索引。
         chunk_count = sync.sync_file(file.filename, force=True)
     except Exception as e:
+        # 文件已保存但索引失败时保留原文件，方便用户修正索引服务后再次单文件同步。
         raise DocumentError(f"文件已保存，但同步索引失败: {e}")
 
     return {
@@ -78,6 +83,8 @@ async def sync_all_documents(
 ):
     """全量同步所有变更文件。"""
 
+    # 先把变更列表返回给前端展示，再执行实际同步。
+    # sync_all 内部仍会按当前文件状态重新计算，保证返回的 chunk 数以最终索引为准。
     changes = sync.detect_changes()
     total = sync.sync_all()
 
@@ -147,6 +154,8 @@ async def list_documents(
 
     knowledge_dir = Path(config["knowledge_dir"])
 
+    # 索引状态文件记录每个文件最近一次同步得到的 chunk 数。
+    # 列表页直接读取这个状态，避免每次刷新都去扫 Milvus 或重新解析大文件。
     index_state = load_index_state(knowledge_dir)
     documents = []
     for file_path in sorted(knowledge_dir.glob("*")):

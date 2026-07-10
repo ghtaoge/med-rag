@@ -75,10 +75,13 @@ class ChatOrchestrator:
         search_results = self._retrieve(question, intent_result.category)
 
         # 3. Prompt 构建 + LLM 生成
+        # 检索为空时可以按配置走 LLM 通用知识兜底。
+        # 如果兜底关闭，则跳过 LLM，直接返回“知识库无结果”的固定提示。
         use_llm_fallback = self._should_use_llm_fallback(search_results)
         skip_llm_generation = not use_llm_fallback and not search_results
 
         if use_llm_fallback:
+            # 兜底 prompt 不拼接知识库来源，避免模型伪造“来自文档”的引用。
             system_prompt, user_prompt = build_llm_fallback_prompt(question)
         elif skip_llm_generation:
             # 兜底关闭且检索为空 → 返回固定提示语
@@ -91,6 +94,8 @@ class ChatOrchestrator:
         if not skip_llm_generation:
             answer = await self._generate(user_prompt, system_prompt)
             if use_llm_fallback:
+                # 非流式接口需要把提示写入最终答案本身，
+                # 这样历史记录、复制答案、接口调用方都能看到来源标识。
                 answer = self._mark_llm_fallback_answer(answer)
 
         # 确定 source_type
@@ -150,6 +155,8 @@ class ChatOrchestrator:
         )
 
         # 3. 判断是否兜底
+        # 流式接口会额外发送 llm_fallback 事件，前端可立即展示“来源于模型”的提示条。
+        # 最终答案仍会在 generation_end 中带上完整文本，便于历史记录复用同一套结构。
         use_llm_fallback = self._should_use_llm_fallback(search_results)
 
         # 兜底关闭且无结果 → 固定提示语，跳过 LLM 生成
@@ -157,6 +164,8 @@ class ChatOrchestrator:
 
         if use_llm_fallback:
             yield self.sse_streamer.stream_llm_fallback()
+            # 兜底回答只基于模型通用知识，不附带知识库片段，
+            # 系统提示会要求模型不要编造来源、页码或文档名。
             system_prompt, user_prompt = build_llm_fallback_prompt(question)
         elif skip_llm_generation:
             full_answer = "当前知识库中没有检索到相关内容，请尝试其他问题或联系管理员。"
@@ -180,6 +189,8 @@ class ChatOrchestrator:
                 raise GenerationError(f"LLM 流式生成失败: {e}")
 
             if use_llm_fallback:
+                # token 已经逐步发送给前端；这里再标记 full_answer，
+                # 用于 generation_end、正确性校验和会话持久化。
                 full_answer = self._mark_llm_fallback_answer(full_answer)
 
         yield self.sse_streamer.stream_generation_end(full_answer, search_results)
@@ -262,6 +273,8 @@ class ChatOrchestrator:
         if not cfg["retrieval"]["llm_fallback_enabled"]:
             return False
 
+        # 当前混合检索采用 RRF 分数，分值代表排名融合结果，不是语义相似度绝对值。
+        # 因此暂时只在“完全没有结果”时兜底，避免把有效但低分的知识库命中误判掉。
         if not results:
             return True
 
@@ -301,6 +314,7 @@ class ChatOrchestrator:
         try:
             self.redis_client.setex(key, ttl, json.dumps(session_data, ensure_ascii=False))
         except Exception as e:
+            # Redis 不可用时降级到本地文件，保证历史记录页面仍然有数据可读。
             logger.warning("save_session_redis_error", error=str(e))
             self._save_local_session(session_data)
 
@@ -353,6 +367,8 @@ class ChatOrchestrator:
 
         from app.core.config import get_config
 
+        # 本地历史记录跟随 knowledge_dir 存放，并已在 .gitignore 中忽略，
+        # 避免把用户问答内容误提交到仓库。
         return Path(get_config()["knowledge_dir"]) / ".med-rag-sessions.json"
 
     def _load_local_sessions(self) -> dict[str, dict]:
@@ -386,6 +402,7 @@ class ChatOrchestrator:
             json.dumps(sessions, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        # 先写临时文件再原子替换，降低进程中断时写出半截 JSON 的概率。
         tmp_path.replace(path)
 
     def _save_local_session(self, session_data: dict) -> None:
@@ -397,6 +414,7 @@ class ChatOrchestrator:
                 key=lambda s: s.get("created_at", ""),
                 reverse=True,
             )[:100]
+            # 本地兜底存储只保留最近 100 条，避免开发环境长期使用后文件过大。
             self._write_local_sessions({s["session_id"]: s for s in ordered})
         except Exception as e:
             logger.warning("save_local_session_error", error=str(e))

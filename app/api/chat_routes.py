@@ -23,9 +23,13 @@ async def chat_stream(
     """
 
     async def event_generator():
+        # 先发送一帧 SSE 注释帧，让浏览器尽快进入 connected 状态。
+        # 即使后续依赖初始化、检索或 LLM 首 token 较慢，前端也不会误判为连接断开。
         yield ": connected\n\n"
         await asyncio.sleep(0)
         try:
+            # 在生成器内部延迟创建编排器，避免 FastAPI 在建立流响应前完成所有重依赖工作。
+            # 对 SSE 来说，越早把响应头和首帧发给客户端，用户侧的“断开”误报越少。
             orchestrator = get_chat_orchestrator()
             stream = orchestrator.chat_stream(question)
             async for event in stream:
@@ -40,6 +44,7 @@ async def chat_stream(
         event_generator(),
         media_type="text/event-stream",
         headers={
+            # 禁用代理和浏览器侧缓冲，保证 token 能按事件流实时到达前端。
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",

@@ -22,6 +22,7 @@ def _split_long_paragraph(paragraph: str, max_size: int) -> list[str]:
     current = ""
 
     for line in lines:
+        # 优先按原始换行切分，尽量保留 Excel/Markdown 转文本后的行结构。
         candidate = f"{current}\n{line}" if current else line
         if len(candidate) <= max_size:
             current = candidate
@@ -32,6 +33,7 @@ def _split_long_paragraph(paragraph: str, max_size: int) -> list[str]:
             current = ""
 
         while len(line) > max_size:
+            # 单行本身超过 max_size 时只能硬切，保证下游向量库字段长度稳定。
             segments.append(line[:max_size])
             line = line[max_size:]
 
@@ -84,6 +86,8 @@ def chunk_text(
             chunk_index += 1
             # overlap：保留最后 overlap 个字符
             remaining_capacity = max_size - len(para) - 2
+            # overlap 不能让新 chunk 超过 max_size。
+            # 这里按剩余容量动态收缩重叠文本，避免“为了上下文连续性”反而破坏长度上限。
             overlap_size = min(overlap, max(0, remaining_capacity))
             overlap_text = current_text[-overlap_size:] if overlap_size > 0 else ""
             current_text = overlap_text + "\n\n" + para
@@ -97,6 +101,7 @@ def chunk_text(
         # 如果太短且已有前一个 chunk，合并到前一个
         if len(current_text.strip()) < min_size and chunks:
             last_chunk = chunks[-1]
+            # 收尾短段落通常依赖前文语境，合并到上一块比单独建短 chunk 更利于召回。
             chunks[-1] = DocumentChunk(
                 id=last_chunk.id,
                 source=last_chunk.source,
@@ -147,6 +152,7 @@ def chunk_markdown(
             return
 
         chunk_type = ChunkType.PARAGRAPH
+        # chunk_type 会进入元数据，后续可用于检索结果展示或针对表格/代码做不同 rerank 策略。
         # 检测是否包含表格
         if any(line.strip().startswith("|") for line in current_content_lines):
             chunk_type = ChunkType.TABLE
@@ -194,6 +200,8 @@ def chunk_markdown(
             # 但不切断表格或代码块
             in_code_block = current_text.count("```") % 2 == 1
             if not in_code_block:
+                # Markdown 表格在上面的独立表格逻辑中尽量整体 flush；
+                # 普通段落超长时及时落块，避免一个标题节拖出过大的 chunk。
                 flush_current()
                 current_content_lines = []
 

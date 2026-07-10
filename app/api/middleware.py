@@ -26,6 +26,8 @@ class RequestLoggingMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # 直接实现 ASGI middleware，而不是继承 BaseHTTPMiddleware。
+        # BaseHTTPMiddleware 会包装 receive/send，在 SSE 场景下容易引入缓冲或提前断流。
         start_time = time.time()
         path = scope.get("path", "")
         method = scope.get("method", "")
@@ -33,6 +35,8 @@ class RequestLoggingMiddleware:
 
         async def send_wrapper(message: Message) -> None:
             nonlocal status_code
+            # 只观察 response.start，不消费 response.body，
+            # 因此不会影响 StreamingResponse 持续写出 token。
             if message["type"] == "http.response.start":
                 status_code = message["status"]
             await send(message)
@@ -109,6 +113,8 @@ class RateLimitMiddleware:
             prefix = cfg["redis"].get("rate_limit_prefix", "med_rag:rate:")
             redis_key = f"{prefix}{rate_key}"
 
+            # Redis 模式适合多进程/多实例部署。计数器按窗口自动过期，
+            # 不依赖本进程内存，重启或扩容后限流语义仍然一致。
             current = self.redis_client.get(redis_key)
             if current and int(current) >= max_requests:
                 response = JSONResponse(
@@ -131,6 +137,8 @@ class RateLimitMiddleware:
             # 内存限速
             now = time.time()
             counts = self._in_memory_counts.get(rate_key, [])
+            # 内存模式只用于本地开发或没有 Redis 的单进程运行。
+            # 每次请求顺手清理窗口外时间戳，避免长期运行时列表无限增长。
             # 清除过期记录
             counts = [t for t in counts if now - t < window]
             if len(counts) >= max_requests:

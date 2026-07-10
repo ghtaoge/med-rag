@@ -136,6 +136,8 @@ BOOL_FIELDS: list[tuple[str, str]] = [
 def load_config() -> dict[str, Any]:
     """加载配置：合并默认值 + YAML 文件 + 环境变量。"""
 
+    # 先加载 .env，再读取 os.getenv。override=False 表示系统环境变量优先，
+    # 方便生产环境通过容器或进程管理器覆盖本地开发配置。
     load_dotenv(ENV_FILE, override=False)
 
     config = copy.deepcopy(DEFAULTS)
@@ -152,6 +154,8 @@ def load_config() -> dict[str, Any]:
         if value is not None:
             _set_nested(config, section, key, value)
 
+    # YAML 与环境变量读出来的值可能是字符串。这里集中做类型收敛，
+    # 后续业务代码可以直接按 int/float/bool 使用，不需要在调用点反复转换。
     # 类型转换
     for section, key in INT_FIELDS:
         val = _get_nested(config, section, key)
@@ -174,6 +178,8 @@ def load_config() -> dict[str, Any]:
 def get_config() -> dict[str, Any]:
     """获取配置（带缓存，只读取一次）。"""
 
+    # 配置在进程内缓存，避免每次请求都读 YAML/.env。
+    # 测试如需刷新配置，可删除 get_config._cache 后重新调用。
     if not hasattr(get_config, "_cache"):
         get_config._cache = load_config()  # type: ignore[attr-defined]
     return get_config._cache  # type: ignore[attr-defined]
@@ -197,6 +203,8 @@ def _set_nested(config: dict, section: str, key: str, value: Any) -> None:
         config[key] = value
         return
 
+    # section 支持 "llm.deepseek" 这种点分路径，
+    # 用来把 DEEPSEEK_API_KEY 映射到 config["llm"]["deepseek"]["api_key"]。
     parts = section.split(".")
     target = config
     for part in parts:

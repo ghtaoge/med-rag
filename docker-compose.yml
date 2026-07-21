@@ -59,6 +59,21 @@ services:
       timeout: 5s
       retries: 10
 
+  safety-model:
+    image: vllm/vllm-openai:v0.9.2
+    command:
+      - --model
+      - Qwen/Qwen3Guard-Gen-0.6B
+      - --max-model-len
+      - "4096"
+    profiles: ["safety-gpu"]
+    networks: ["safety-internal"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+
   med-rag:
     build:
       context: .
@@ -77,6 +92,8 @@ services:
       RAG_JWT_SECRET: ${RAG_JWT_SECRET:-}
       RAG_SECURE_COOKIES: ${RAG_SECURE_COOKIES:-true}
       RAG_ENVIRONMENT: production
+      RAG_SAFETY_ENABLED: ${RAG_SAFETY_ENABLED:-true}
+      RAG_SAFETY_CLASSIFIER_BASE_URL: http://safety-model:8000/v1
     volumes:
       - knowledge_data:/app/data
       - whoosh_data:/app/whoosh_index
@@ -87,6 +104,9 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+    networks:
+      - default
+      - safety-internal
 
 volumes:
   milvus_etcd_data:
@@ -96,3 +116,7 @@ volumes:
   postgres_data:
   knowledge_data:
   whoosh_data:
+
+networks:
+  safety-internal:
+    internal: true

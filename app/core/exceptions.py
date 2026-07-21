@@ -114,3 +114,18 @@ class PasswordChangeRequired(SecurityError):
 
     def __init__(self):
         super().__init__("首次登录必须修改密码", code="PASSWORD_CHANGE_REQUIRED")
+
+
+class SafetyPolicyBlocked(SecurityError):
+    def __init__(self, message: str = "请求未通过安全策略"):
+        super().__init__(message, code="SAFETY_POLICY_BLOCKED")
+
+
+class OutputSafetyBlocked(SecurityError):
+    def __init__(self, message: str = "输出未通过安全检查"):
+        super().__init__(message, code="OUTPUT_SAFETY_BLOCKED")
+
+
+class SafetyAuditUnavailable(SecurityError):
+    def __init__(self):
+        super().__init__("安全审计服务不可用", code="SAFETY_AUDIT_UNAVAILABLE")

@@ -12,6 +12,8 @@ export const useChatStore = defineStore('chat', {
     correctness: null,
     sessions: [],
     eventSource: null,
+    safetyAssessment: null,
+    safetyError: null,
   }),
 
   actions: {
@@ -23,9 +25,17 @@ export const useChatStore = defineStore('chat', {
       this.sources = []
       this.intent = null
       this.correctness = null
+      this.safetyAssessment = null
+      this.safetyError = null
       this.isStreaming = true
 
       this.eventSource = chatStream(question, {
+        onSafetyAssessment: (data) => {
+          this.safetyAssessment = data
+        },
+        onSafetyBlocked: (data) => {
+          this.handleSafetyBlocked(data)
+        },
         onIntent: (data) => {
           this.intent = data
         },
@@ -58,9 +68,23 @@ export const useChatStore = defineStore('chat', {
         },
         onError: (data) => {
           this.isStreaming = false
-          this.answer += `\n\n❌ 错误: ${data.message || '未知错误'}`
+          if (data.code === 'SAFETY_POLICY_BLOCKED' || data.code === 'OUTPUT_SAFETY_BLOCKED') {
+            this.handleSafetyBlocked(data)
+          } else {
+            this.answer += `\n\n错误: ${data.message || '未知错误'}`
+          }
         },
       })
+    },
+
+    handleSafetyBlocked(data) {
+      this.answer = ''
+      this.sources = []
+      this.correctness = null
+      this.isStreaming = false
+      this.safetyError = data
+      this.eventSource?.close()
+      this.eventSource = null
     },
 
     // 停止流式
@@ -96,6 +120,8 @@ export const useChatStore = defineStore('chat', {
       this.sources = []
       this.intent = null
       this.correctness = null
+      this.safetyAssessment = null
+      this.safetyError = null
     },
   },
 })

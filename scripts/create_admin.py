@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
-from app.core.dependencies import get_security_session_factory
-from app.security.audit import AuditAction, AuditService
-from app.security.models import Role
-from app.security.repository import SecurityRepository
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from app.core.dependencies import get_security_session_factory  # noqa: E402
+from app.security.audit import AuditAction, AuditService  # noqa: E402
+from app.security.models import Role  # noqa: E402
+from app.security.repository import SecurityRepository  # noqa: E402
 
 
 def create_admin(

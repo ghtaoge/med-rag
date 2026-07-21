@@ -78,6 +78,18 @@ auth:
   issuer: "med-rag"
   secure_cookies: true
 
+safety:
+  enabled: true
+  policy_version: "2026-07-21.1"
+  classifier_base_url: "http://safety-model:8000/v1"
+  classifier_model: "Qwen/Qwen3Guard-Gen-0.6B"
+  classifier_timeout_seconds: 3
+  normal_max_chars: 4000
+  degraded_max_chars: 500
+  restricted_top_k: 3
+  restricted_preview_chars: 300
+  stream_buffer_chars: 512
+
 knowledge_dir: data
 whoosh_dir: whoosh_index
 log_level: INFO

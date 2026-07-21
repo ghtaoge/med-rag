@@ -99,6 +99,18 @@ DEFAULTS: dict[str, Any] = {
         "issuer": "med-rag",
         "secure_cookies": True,
     },
+    "safety": {
+        "enabled": True,
+        "policy_version": "2026-07-21.1",
+        "classifier_base_url": "http://safety-model:8000/v1",
+        "classifier_model": "Qwen/Qwen3Guard-Gen-0.6B",
+        "classifier_timeout_seconds": 3,
+        "normal_max_chars": 4000,
+        "degraded_max_chars": 500,
+        "restricted_top_k": 3,
+        "restricted_preview_chars": 300,
+        "stream_buffer_chars": 512,
+    },
     "knowledge_dir": "data",
     "whoosh_dir": "whoosh_index",
     "log_level": "INFO",
@@ -123,6 +135,22 @@ ENV_MAPPINGS: dict[str, tuple[str, str | None]] = {
     "RAG_DATABASE_URL": ("database", "url"),
     "RAG_JWT_SECRET": ("auth", "jwt_secret"),
     "RAG_SECURE_COOKIES": ("auth", "secure_cookies"),
+    "RAG_SAFETY_ENABLED": ("safety", "enabled"),
+    "RAG_SAFETY_POLICY_VERSION": ("safety", "policy_version"),
+    "RAG_SAFETY_CLASSIFIER_BASE_URL": ("safety", "classifier_base_url"),
+    "RAG_SAFETY_CLASSIFIER_MODEL": ("safety", "classifier_model"),
+    "RAG_SAFETY_CLASSIFIER_TIMEOUT_SECONDS": (
+        "safety",
+        "classifier_timeout_seconds",
+    ),
+    "RAG_SAFETY_NORMAL_MAX_CHARS": ("safety", "normal_max_chars"),
+    "RAG_SAFETY_DEGRADED_MAX_CHARS": ("safety", "degraded_max_chars"),
+    "RAG_SAFETY_RESTRICTED_TOP_K": ("safety", "restricted_top_k"),
+    "RAG_SAFETY_RESTRICTED_PREVIEW_CHARS": (
+        "safety",
+        "restricted_preview_chars",
+    ),
+    "RAG_SAFETY_STREAM_BUFFER_CHARS": ("safety", "stream_buffer_chars"),
 }
 
 # 需要强制转 int 的字段
@@ -151,6 +179,12 @@ INT_FIELDS: list[tuple[str, str]] = [
     ("security", "max_archive_members"),
     ("auth", "access_ttl_seconds"),
     ("auth", "refresh_ttl_seconds"),
+    ("safety", "classifier_timeout_seconds"),
+    ("safety", "normal_max_chars"),
+    ("safety", "degraded_max_chars"),
+    ("safety", "restricted_top_k"),
+    ("safety", "restricted_preview_chars"),
+    ("safety", "stream_buffer_chars"),
 ]
 
 # 需要强制转 float 的字段
@@ -162,6 +196,7 @@ FLOAT_FIELDS: list[tuple[str, str]] = [
 BOOL_FIELDS: list[tuple[str, str]] = [
     ("retrieval", "llm_fallback_enabled"),
     ("auth", "secure_cookies"),
+    ("safety", "enabled"),
 ]
 
 

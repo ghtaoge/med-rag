@@ -21,6 +21,7 @@ from app.api.evaluation import router as evaluation_router
 from app.api.health import router as health_router
 from app.security.routes import router as auth_router
 from app.security.admin_routes import router as security_admin_router
+from app.safety.routes import router as safety_router
 
 config = get_config()
 setup_logging(config.get("log_level", "INFO"))
@@ -40,8 +41,9 @@ app.add_middleware(
     allow_headers=[
         "Authorization",
         "Content-Type",
-        "X-Med-Rag-Admin-Key",
         "X-CSRF-Token",
+        "X-Reauthentication-Token",
+        "X-Request-ID",
     ],
 )
 
@@ -57,6 +59,7 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(security_admin_router)
+app.include_router(safety_router)
 app.include_router(chat_router)
 app.include_router(documents_router)
 app.include_router(evaluation_router)

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,7 +20,13 @@ from app.core.models import (
     CorrectnessResult,
     IntentCategory,
 )
-from app.core.exceptions import GenerationError, MedRagError, RetrievalError
+from app.core.exceptions import (
+    GenerationError,
+    MedRagError,
+    OutputSafetyBlocked,
+    RetrievalError,
+    SafetyPolicyBlocked,
+)
 from app.core.logging import get_logger
 
 from app.retrieval.hybrid_engine import HybridRetrievalEngine
@@ -33,8 +40,16 @@ from app.generation.stream import SSEStreamer
 from app.intent.classifier import IntentClassifier
 from app.evaluation.correctness_check import CorrectnessChecker
 from app.retrieval.access import RetrievalAccess
+from app.safety.models import (
+    RiskLevel,
+    SafetyAssessment,
+    SafetyDecision,
+)
+from app.safety.output import OutputBlocked, SafeStreamBuffer, sanitize_complete_output
 
 if TYPE_CHECKING:
+    from app.safety.audit import SafetyAuditService
+    from app.safety.gateway import SafetyGateway
     from app.security.principal import Principal
 
 logger = get_logger(__name__)
@@ -59,6 +74,9 @@ class ChatOrchestrator:
         correctness_checker: CorrectnessChecker,
         redis_client=None,
         session_store_path: Path | None = None,
+        safety_gateway: SafetyGateway | None = None,
+        safety_audit: SafetyAuditService | None = None,
+        safety_config: dict | None = None,
     ):
         self.retrieval_engine = retrieval_engine
         self.llm_engine = llm_engine
@@ -67,17 +85,44 @@ class ChatOrchestrator:
         self.redis_client = redis_client
         self.sse_streamer = SSEStreamer()
         self.session_store_path = session_store_path
+        self.safety_gateway = safety_gateway
+        self.safety_audit = safety_audit
+        self.safety_config = safety_config or {
+            "policy_version": "disabled",
+            "restricted_top_k": 3,
+            "restricted_preview_chars": 300,
+            "stream_buffer_chars": 512,
+        }
 
-    async def chat(self, question: str, principal: Principal) -> QaSession:
+    async def chat(
+        self,
+        question: str,
+        principal: Principal,
+        request_id: str = "",
+    ) -> QaSession:
         """非流式问答完整流程。返回完整 QaSession。"""
 
         session_id = str(uuid.uuid4())
+        request_id = request_id or uuid.uuid4().hex
+        assessment = self._assess(question)
+        self._record_safety(principal, question, assessment, request_id)
+        if assessment.decision == SafetyDecision.BLOCK:
+            raise SafetyPolicyBlocked()
+        safe_question = assessment.redacted_input
+        top_k = (
+            self.safety_config["restricted_top_k"]
+            if assessment.decision == SafetyDecision.ALLOW_RESTRICTED
+            else 5
+        )
 
         # 1. 意图识别
-        intent_result = self._classify_intent(question)
+        intent_result = self._classify_intent(safe_question)
 
         # 2. 混合检索
-        search_results = self._retrieve(question, intent_result.category, principal)
+        search_results = self._retrieve(
+            safe_question, intent_result.category, principal, top_k
+        )
+        search_results = self._safe_sources(search_results, principal, assessment)
 
         # 3. Prompt 构建 + LLM 生成
         # 检索为空时可以按配置走 LLM 通用知识兜底。
@@ -87,13 +132,13 @@ class ChatOrchestrator:
 
         if use_llm_fallback:
             # 兜底 prompt 不拼接知识库来源，避免模型伪造“来自文档”的引用。
-            system_prompt, user_prompt = build_llm_fallback_prompt(question)
+            system_prompt, user_prompt = build_llm_fallback_prompt(safe_question)
         elif skip_llm_generation:
             # 兜底关闭且检索为空 → 返回固定提示语
             answer = "当前知识库中没有检索到相关内容，请尝试其他问题或联系管理员。"
         else:
             system_prompt, user_prompt = build_prompt(
-                question, search_results, intent_result.category
+                safe_question, search_results, intent_result.category
             )
 
         if not skip_llm_generation:
@@ -102,6 +147,14 @@ class ChatOrchestrator:
                 # 非流式接口需要把提示写入最终答案本身，
                 # 这样历史记录、复制答案、接口调用方都能看到来源标识。
                 answer = self._mark_llm_fallback_answer(answer)
+
+        if self.safety_gateway is not None:
+            try:
+                answer, search_results = sanitize_complete_output(
+                    answer, search_results, principal
+                )
+            except OutputBlocked as exc:
+                raise OutputSafetyBlocked() from exc
 
         # 确定 source_type
         source_type = (
@@ -115,7 +168,7 @@ class ChatOrchestrator:
         # 5. 组装会话
         session = QaSession(
             session_id=session_id,
-            question=question,
+            question=safe_question,
             answer=answer,
             sources=search_results,
             intent=intent_result,
@@ -123,6 +176,8 @@ class ChatOrchestrator:
             source_type=source_type,
             user_id=principal.user_id,
             department_ids=principal.department_ids,
+            safety=assessment.public_summary(),
+            request_id=request_id,
             created_at=datetime.now(),
         )
 
@@ -140,14 +195,31 @@ class ChatOrchestrator:
         return session
 
     async def chat_stream(
-        self, question: str, principal: Principal
+        self,
+        question: str,
+        principal: Principal,
+        request_id: str = "",
     ) -> AsyncIterator[str]:
         """流式问答完整流程。逐步生成 SSE 事件。"""
 
         session_id = str(uuid.uuid4())
+        request_id = request_id or uuid.uuid4().hex
+        assessment = self._assess(question)
+        self._record_safety(principal, question, assessment, request_id)
+        yield self.sse_streamer.stream_safety_assessment(
+            assessment.public_summary()
+        )
+        if assessment.decision == SafetyDecision.BLOCK:
+            raise SafetyPolicyBlocked()
+        safe_question = assessment.redacted_input
+        top_k = (
+            self.safety_config["restricted_top_k"]
+            if assessment.decision == SafetyDecision.ALLOW_RESTRICTED
+            else 5
+        )
 
         # 1. 意图识别
-        intent_result = self._classify_intent(question)
+        intent_result = self._classify_intent(safe_question)
         yield self.sse_streamer.stream_intent(intent_result)
 
         # 2. 混合检索
@@ -156,7 +228,16 @@ class ChatOrchestrator:
             sources=["milvus", "whoosh"],
         )
 
-        search_results = self._retrieve(question, intent_result.category, principal)
+        search_results = self._retrieve(
+            safe_question, intent_result.category, principal, top_k
+        )
+        try:
+            search_results = self._safe_sources(
+                search_results, principal, assessment
+            )
+        except OutputBlocked:
+            yield self.sse_streamer.stream_safety_blocked()
+            return
 
         yield self.sse_streamer.stream_search_result(
             chunks=len(search_results),
@@ -175,12 +256,12 @@ class ChatOrchestrator:
             yield self.sse_streamer.stream_llm_fallback()
             # 兜底回答只基于模型通用知识，不附带知识库片段，
             # 系统提示会要求模型不要编造来源、页码或文档名。
-            system_prompt, user_prompt = build_llm_fallback_prompt(question)
+            system_prompt, user_prompt = build_llm_fallback_prompt(safe_question)
         elif skip_llm_generation:
             full_answer = "当前知识库中没有检索到相关内容，请尝试其他问题或联系管理员。"
         else:
             system_prompt, user_prompt = build_prompt(
-                question, search_results, intent_result.category
+                safe_question, search_results, intent_result.category
             )
 
         # LLM 流式生成（仅在非 skip 时执行）
@@ -188,11 +269,23 @@ class ChatOrchestrator:
             yield self.sse_streamer.stream_generation_start(self.llm_engine.model_name)
 
             full_answer = ""
+            stream_buffer = SafeStreamBuffer(
+                self.safety_config["stream_buffer_chars"]
+            )
             try:
                 token_stream = self.llm_engine.generate_stream(user_prompt, system_prompt)
                 async for token in token_stream:
-                    full_answer += token
-                    yield self.sse_streamer.stream_token(token)
+                    released = stream_buffer.feed(token)
+                    if released:
+                        full_answer += released
+                        yield self.sse_streamer.stream_token(released)
+                released = stream_buffer.finalize()
+                if released:
+                    full_answer += released
+                    yield self.sse_streamer.stream_token(released)
+            except OutputBlocked:
+                yield self.sse_streamer.stream_safety_blocked()
+                return
             except Exception as e:
                 logger.error("llm_stream_error", error=str(e))
                 raise GenerationError(f"LLM 流式生成失败: {e}")
@@ -217,7 +310,7 @@ class ChatOrchestrator:
         # 5. 存入 Redis
         session = QaSession(
             session_id=session_id,
-            question=question,
+            question=safe_question,
             answer=full_answer,
             sources=search_results,
             intent=intent_result,
@@ -225,6 +318,8 @@ class ChatOrchestrator:
             source_type=source_type,
             user_id=principal.user_id,
             department_ids=principal.department_ids,
+            safety=assessment.public_summary(),
+            request_id=request_id,
             created_at=datetime.now(),
         )
         self._save_session(session)
@@ -239,6 +334,51 @@ class ChatOrchestrator:
             confidence=correctness.confidence,
             source_type=source_type,
         )
+
+    def _assess(self, question: str) -> SafetyAssessment:
+        if self.safety_gateway is None:
+            return SafetyAssessment(
+                RiskLevel.LOW,
+                (),
+                (),
+                question,
+                self.safety_config["policy_version"],
+                SafetyDecision.ALLOW,
+            )
+        return self.safety_gateway.assess(question)
+
+    def _record_safety(
+        self,
+        principal: Principal,
+        raw_input: str,
+        assessment: SafetyAssessment,
+        request_id: str,
+    ) -> None:
+        if self.safety_audit is not None:
+            self.safety_audit.record(principal, raw_input, assessment, request_id)
+
+    def _safe_sources(
+        self,
+        results: list[SearchResult],
+        principal: Principal,
+        assessment: SafetyAssessment,
+    ) -> list[SearchResult]:
+        if self.safety_gateway is None:
+            return results
+        _, safe_results = sanitize_complete_output("", results, principal)
+        if assessment.decision != SafetyDecision.ALLOW_RESTRICTED:
+            return safe_results
+        preview_chars = self.safety_config["restricted_preview_chars"]
+        return [
+            replace(
+                result,
+                chunk=replace(
+                    result.chunk,
+                    content=result.chunk.content[:preview_chars],
+                ),
+            )
+            for result in safe_results
+        ]
 
     def _classify_intent(self, question: str) -> IntentResult:
         """意图识别。"""
@@ -384,6 +524,8 @@ class ChatOrchestrator:
                 for s in session.sources
             ],
             "source_type": session.source_type,
+            "safety": session.safety,
+            "request_id": session.request_id,
             "created_at": session.created_at.isoformat(),
         }
 

@@ -110,4 +110,6 @@ class QaSession:
     source_type: str = "knowledge_base"  # "knowledge_base" | "llm_fallback" | "no_result"
     user_id: str = ""
     department_ids: tuple[str, ...] = field(default_factory=tuple)
+    safety: dict[str, str] = field(default_factory=dict)
+    request_id: str = ""
     created_at: datetime = field(default_factory=datetime.now)

@@ -39,6 +39,22 @@ class SSEStreamer:
         }
         return f"event: intent\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
+    def stream_safety_assessment(self, summary: dict[str, str]) -> str:
+        return (
+            "event: safety_assessment\ndata: "
+            f"{json.dumps(summary, ensure_ascii=False)}\n\n"
+        )
+
+    def stream_safety_blocked(self) -> str:
+        data = {
+            "code": "OUTPUT_SAFETY_BLOCKED",
+            "message": "输出未通过安全检查",
+        }
+        return (
+            "event: safety_blocked\ndata: "
+            f"{json.dumps(data, ensure_ascii=False)}\n\n"
+        )
+
     def stream_search_start(self, strategy: str, sources: list[str]) -> str:
         """生成 search_start SSE 事件。"""
 

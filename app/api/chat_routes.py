@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -29,12 +30,15 @@ def _stream_response(
     question: str,
     principal: Principal,
     orchestrator: ChatOrchestrator,
+    request_id: str,
 ) -> StreamingResponse:
     async def event_generator():
         yield ": connected\n\n"
         await asyncio.sleep(0)
         try:
-            async for event in orchestrator.chat_stream(question, principal):
+            async for event in orchestrator.chat_stream(
+                question, principal, request_id
+            ):
                 yield event
         except MedRagError as exc:
             yield (
@@ -60,29 +64,35 @@ def _stream_response(
 
 @router.get("/stream", deprecated=True)
 async def chat_stream_legacy(
+    request: Request,
     question: str = Query(..., description="用户问题"),
     principal: Principal = Depends(get_current_principal),
     orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
 ):
-    return _stream_response(question, principal, orchestrator)
+    request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex)
+    return _stream_response(question, principal, orchestrator, request_id)
 
 
 @router.post("/stream")
 async def chat_stream(
+    request: Request,
     payload: ChatRequest,
     principal: Principal = Depends(get_current_principal),
     orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
 ):
-    return _stream_response(payload.question, principal, orchestrator)
+    request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex)
+    return _stream_response(payload.question, principal, orchestrator, request_id)
 
 
 @router.post("/complete")
 async def chat_complete(
+    request: Request,
     question: str = Query(..., description="用户问题"),
     orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
     principal: Principal = Depends(get_current_principal),
 ):
-    session = await orchestrator.chat(question, principal)
+    request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex)
+    session = await orchestrator.chat(question, principal, request_id)
     return {
         "session_id": session.session_id,
         "question": session.question,
@@ -111,6 +121,8 @@ async def chat_complete(
             for result in session.sources
         ],
         "created_at": session.created_at.isoformat(),
+        "safety": session.safety,
+        "request_id": session.request_id,
     }
 
 

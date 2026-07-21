@@ -97,3 +97,21 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
+
+
+class SafetyEvent(Base):
+    __tablename__ = "safety_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    department_ids_json: Mapped[str] = mapped_column(Text)
+    request_id: Mapped[str] = mapped_column(String(64), index=True)
+    input_hash: Mapped[str] = mapped_column(String(64), index=True)
+    redacted_excerpt: Mapped[str] = mapped_column(String(300))
+    risk_level: Mapped[str] = mapped_column(String(16), index=True)
+    categories_json: Mapped[str] = mapped_column(Text)
+    decision: Mapped[str] = mapped_column(String(32), index=True)
+    policy_version: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )

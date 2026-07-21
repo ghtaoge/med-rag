@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from dataclasses import replace
 
 import pytest
 
@@ -87,3 +88,31 @@ def test_retrieval_without_access_fails_closed():
     engine = HybridRetrievalEngine(VectorStore([]), KeywordStore([]))
     with pytest.raises(AuthorizationError):
         engine.search("阿司匹林")
+
+
+def test_restricted_top_k_cannot_be_expanded_by_reranker():
+    results = [
+        replace(
+            _result((DEPARTMENT_A,)),
+            chunk=replace(_result((DEPARTMENT_A,)).chunk, id=f"chunk-{index}"),
+        )
+        for index in range(5)
+    ]
+
+    class RecordingReranker:
+        def __init__(self):
+            self.top_k = None
+
+        def rerank(self, query, results, top_k):
+            self.top_k = top_k
+            return results[:top_k]
+
+    reranker = RecordingReranker()
+    engine = HybridRetrievalEngine(VectorStore(results), KeywordStore([]), reranker)
+    output = engine.search(
+        "阿司匹林",
+        top_k=3,
+        access=RetrievalAccess("user-a", (DEPARTMENT_A,)),
+    )
+    assert reranker.top_k == 3
+    assert len(output) == 3

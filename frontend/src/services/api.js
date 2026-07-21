@@ -107,6 +107,8 @@ export function chatComplete(question) {
 }
 
 const SSE_CALLBACKS = {
+  safety_assessment: 'onSafetyAssessment',
+  safety_blocked: 'onSafetyBlocked',
   intent: 'onIntent',
   search_start: 'onSearchStart',
   search_result: 'onSearchResult',

@@ -38,6 +38,19 @@
             <div class="bubble">{{ chatStore.question }}</div>
           </article>
 
+          <div v-if="chatStore.safetyError" class="safety-state blocked" role="alert">
+            <ShieldX :size="17" />
+            <span>{{ chatStore.safetyError.message }}</span>
+          </div>
+
+          <div
+            v-else-if="chatStore.safetyAssessment?.decision === 'allow_restricted'"
+            class="safety-state restricted"
+          >
+            <ShieldAlert :size="17" />
+            <span>本次请求已脱敏，并使用受限检索范围。</span>
+          </div>
+
           <div v-if="chatStore.isLlmFallback" class="llm-fallback-notice">
             ⚠️ 知识库中未检索到相关内容，以下为模型基于通用知识的回答，仅供参考
           </div>
@@ -177,6 +190,8 @@ import {
   SearchCheck,
   SendHorizontal,
   ShieldCheck,
+  ShieldAlert,
+  ShieldX,
   Square,
   Stethoscope,
   UserRound,
@@ -419,6 +434,29 @@ watch(
   font-size: 13px;
   font-weight: 500;
   line-height: 1.6;
+}
+
+.safety-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 20px 12px 46px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.safety-state.restricted {
+  border-color: rgba(245, 158, 11, 0.28);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--amber);
+}
+
+.safety-state.blocked {
+  border-color: rgba(239, 68, 68, 0.28);
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--red);
 }
 
 .messages {

@@ -89,7 +89,9 @@ class HybridRetrievalEngine(RetrievalEngine):
         if strategy.use_reranker and len(fused) > top_k:
             try:
                 final = self.reranker.rerank(
-                    query=question, results=fused, top_k=strategy.rerank_top_k
+                    query=question,
+                    results=fused,
+                    top_k=min(strategy.rerank_top_k, top_k),
                 )
             except Exception:
                 # Reranker 不可用时直接返回融合结果

@@ -181,6 +181,23 @@ docker compose exec -T postgres pg_restore -U med_rag -d med_rag --clean < med_r
 
 备份范围还应包含 `knowledge_data`、`whoosh_data` 和 Milvus 数据卷。恢复后，对已批准文档执行索引重建，确保数据库 ACL 与两个检索索引一致。
 
+### 输入与输出安全网关
+
+安全网关在意图识别和检索之前运行。它先做 Unicode 归一化与确定性 DLP，再将脱敏文本发送给内网 Qwen3Guard。分类器不可用时，普通请求降为受限检索，超过 500 字或命中高风险规则的请求直接阻断。
+
+```bash
+# 启动应用与内网 GPU 安全模型，模型端口不会发布到宿主机
+docker compose --profile safety-gpu up -d --build
+
+# 执行固定 200 条案例的离线、确定性发布门禁
+python scripts/evaluate_safety.py
+
+# 连同本地 Qwen3Guard 执行语义评估
+RAG_SAFETY_EVAL_USE_CLASSIFIER=true python scripts/evaluate_safety.py
+```
+
+策略变更必须同步提升 `RAG_SAFETY_POLICY_VERSION`，重新评审 `data/evaluation/safety_cases.jsonl` 并通过门禁。安全事件只保留输入哈希、脱敏摘要、类别和决策；保留周期应按公司安全审计制度配置，导出时不得包含原始请求正文。
+
 ## License
 
 MIT

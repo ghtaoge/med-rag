@@ -10,6 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import redis
+import httpx
 from fastapi import Depends
 
 from app.core.config import get_config
@@ -35,6 +36,9 @@ from app.security.auth_service import AuthService
 from app.security.database import build_engine, build_session_factory
 from app.security.identity_provider import LocalIdentityProvider
 from app.security.repository import SecurityRepository
+from app.safety.audit import SafetyAuditService
+from app.safety.classifier import QwenGuardClassifier
+from app.safety.gateway import SafetyGateway
 
 logger = get_logger(__name__)
 
@@ -191,7 +195,22 @@ def get_document_validator() -> DocumentValidator:
 
 
 @lru_cache
-def get_chat_orchestrator() -> ChatOrchestrator:
+def get_safety_gateway() -> SafetyGateway:
+    cfg = get_config()
+    settings = cfg["safety"]
+    classifier = QwenGuardClassifier(
+        httpx.Client(),
+        settings["classifier_base_url"],
+        settings["classifier_model"],
+        settings["classifier_timeout_seconds"],
+    )
+    return SafetyGateway(classifier, cfg)
+
+
+def get_chat_orchestrator(
+    session=Depends(get_db_session),
+    safety_gateway: SafetyGateway = Depends(get_safety_gateway),
+) -> ChatOrchestrator:
     """获取对话编排器实例（核心问答流程协调器）。"""
 
     return ChatOrchestrator(
@@ -200,4 +219,7 @@ def get_chat_orchestrator() -> ChatOrchestrator:
         intent_classifier=get_intent_classifier(),
         correctness_checker=get_correctness_checker(),
         redis_client=get_redis_client(),
+        safety_gateway=safety_gateway,
+        safety_audit=SafetyAuditService(session),
+        safety_config=get_config()["safety"],
     )

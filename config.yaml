@@ -57,6 +57,17 @@ llm:
     base_url: "https://open.bigmodel.cn/api/paas/v4"
     model: "glm-4-plus"
 
+security:
+  bootstrap_admin_key: ""
+  max_upload_bytes: 52428800
+  max_archive_ratio: 100
+  max_archive_uncompressed_bytes: 524288000
+  max_archive_members: 10000
+
+cors:
+  allowed_origins:
+    - "http://localhost:3000"
+
 knowledge_dir: data
 whoosh_dir: whoosh_index
 log_level: INFO

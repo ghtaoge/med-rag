@@ -32,10 +32,15 @@ app = FastAPI(
 # ── CORS ──
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # 生产环境应限制具体域名
+    allow_origins=config["cors"]["allowed_origins"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Med-Rag-Admin-Key",
+        "X-CSRF-Token",
+    ],
 )
 
 # ── 中间件 ──

@@ -2,23 +2,61 @@
 
 from __future__ import annotations
 
-import shutil
+import os
+import uuid
 from pathlib import Path
-from typing import Optional
 
-from fastapi import APIRouter, Depends, UploadFile, File, Query
+from fastapi import APIRouter, Depends, UploadFile, File
 
 from app.core.dependencies import (
     get_config_dep,
     get_document_sync,
     get_document_validator,
 )
-from app.core.exceptions import DocumentError, ValidationError
+from app.core.exceptions import DocumentError, FileSecurityError, ValidationError
+from app.documents.file_safety import inspect_file, resolve_child, validate_client_filename
 from app.documents.sync import DocumentSync
 from app.documents.validator import DocumentValidator
 from app.documents.index_state import load_index_state, remove_index_state
+from app.security.bootstrap_auth import verify_bootstrap_admin
 
-router = APIRouter(prefix="/api/v1/documents", tags=["文档管理"])
+router = APIRouter(
+    prefix="/api/v1/documents",
+    tags=["文档管理"],
+    dependencies=[Depends(verify_bootstrap_admin)],
+)
+
+
+async def _save_bounded_upload(
+    file: UploadFile,
+    directory: Path,
+    max_bytes: int,
+    *,
+    destination_name: str | None = None,
+) -> tuple[str, Path]:
+    """将上传流写入同目录临时文件，检查后再原子替换。"""
+
+    filename = validate_client_filename(file.filename)
+    suffix = Path(filename).suffix.lower()
+    directory.mkdir(parents=True, exist_ok=True)
+    final_name = destination_name or filename
+    destination = resolve_child(directory, final_name)
+    temporary = resolve_child(directory, f".upload-{uuid.uuid4().hex}{suffix}")
+    written = 0
+    try:
+        with temporary.open("xb") as output:
+            while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if written > max_bytes:
+                    raise FileSecurityError("文件大小超过限制")
+                output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        inspect_file(temporary, file.content_type)
+        os.replace(temporary, destination)
+        return filename, destination
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 @router.post("/upload")
@@ -30,23 +68,24 @@ async def upload_document(
 ):
     """上传文档 → 校验 → 保存 → 自动同步索引。"""
 
-    # 保存文件到知识库目录
     knowledge_dir = Path(config["knowledge_dir"])
-    dest_path = knowledge_dir / file.filename
+    filename = validate_client_filename(file.filename)
+    dest_path = resolve_child(knowledge_dir, filename)
 
     # 检查文件名冲突
     if dest_path.exists():
         raise ValidationError(f"文件已存在: {file.filename}")
 
-    # 先落盘再校验：校验器按路径读取文件，不直接消费 UploadFile 流。
-    # 如果后续校验失败，会在下面主动删除刚保存的文件，避免无效文件留在知识库目录。
-    # 保存上传文件
     try:
-        with open(dest_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+        _, dest_path = await _save_bounded_upload(
+            file,
+            knowledge_dir,
+            config.get("security", {}).get("max_upload_bytes", 50 * 1024 * 1024),
+        )
+    except FileSecurityError:
+        raise
     except Exception as e:
-        raise DocumentError(f"保存文件失败: {e}")
+        raise DocumentError("保存文件失败") from e
 
     # 校验
     result = validator.validate(dest_path)
@@ -62,14 +101,14 @@ async def upload_document(
     try:
         # 上传成功后立即同步当前文件，前端无需再手动点击“同步”。
         # force=True 用于覆盖旧索引状态，保证 Excel 等同名内容更新后能马上进入索引。
-        chunk_count = sync.sync_file(file.filename, force=True)
+        chunk_count = sync.sync_file(filename, force=True)
     except Exception as e:
         # 文件已保存但索引失败时保留原文件，方便用户修正索引服务后再次单文件同步。
-        raise DocumentError(f"文件已保存，但同步索引失败: {e}")
+        raise DocumentError("文件已保存，但同步索引失败") from e
 
     return {
         "status": "accepted",
-        "filename": file.filename,
+        "filename": filename,
         "chunk_count": chunk_count,
         "in_index": chunk_count > 0,
         "errors": result.errors,
@@ -107,10 +146,11 @@ async def sync_single_document(
 ):
     """同步单个文件。"""
 
+    filename = validate_client_filename(filename)
     try:
         chunk_count = sync.sync_file(filename)
     except Exception as e:
-        raise DocumentError(f"同步文件 {filename} 失败: {e}")
+        raise DocumentError("同步文件失败") from e
 
     return {
         "filename": filename,
@@ -126,14 +166,18 @@ async def validate_document(
 ):
     """校验文档（不入库，只检查）。"""
 
-    # 临时保存文件
     knowledge_dir = Path(config["knowledge_dir"])
-    temp_path = knowledge_dir / f"_temp_{file.filename}"
+    filename = validate_client_filename(file.filename)
+    suffix = Path(filename).suffix.lower()
+    temp_name = f".validate-{uuid.uuid4().hex}{suffix}"
 
     try:
-        with open(temp_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+        _, temp_path = await _save_bounded_upload(
+            file,
+            knowledge_dir,
+            config.get("security", {}).get("max_upload_bytes", 50 * 1024 * 1024),
+            destination_name=temp_name,
+        )
 
         result = validator.validate(temp_path)
 
@@ -143,7 +187,7 @@ async def validate_document(
             "warnings": result.warnings,
         }
     finally:
-        temp_path.unlink(missing_ok=True)
+        resolve_child(knowledge_dir, temp_name).unlink(missing_ok=True)
 
 
 @router.get("/list")
@@ -191,7 +235,8 @@ async def delete_document(
     """从知识库删除文档（文件 + 索引）。"""
 
     knowledge_dir = Path(config["knowledge_dir"])
-    file_path = knowledge_dir / filename
+    filename = validate_client_filename(filename)
+    file_path = resolve_child(knowledge_dir, filename)
 
     # 删除文件
     if file_path.exists():

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.documents.loader import supported_extensions
+from app.documents.file_safety import inspect_file
+from app.core.exceptions import FileSecurityError
 
 
 @dataclass
@@ -47,6 +49,7 @@ class DocumentValidator:
 
         # 内容完整性检查（尝试读取）
         try:
+            inspect_file(file_path)
             from app.documents.loader import load_document
 
             text = load_document(file_path)
@@ -58,6 +61,9 @@ class DocumentValidator:
             if len(text.strip()) < 50 and ext in {".pdf", ".png", ".jpg"}:
                 warnings.append("提取内容过少，可能是扫描件 OCR 未成功识别")
 
+        except FileSecurityError as e:
+            errors.append(e.message)
+            return ValidationResult(is_valid=False, errors=errors, warnings=warnings)
         except Exception as e:
             errors.append(f"文件读取失败: {str(e)}")
             return ValidationResult(is_valid=False, errors=errors, warnings=warnings)

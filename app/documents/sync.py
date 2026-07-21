@@ -12,6 +12,7 @@ from app.core.models import DocumentChunk
 from app.documents.loader import load_document
 from app.documents.chunker import chunk_text, chunk_markdown
 from app.documents.index_state import set_index_state, remove_index_state
+from app.documents.file_safety import resolve_child, validate_client_filename
 
 config = get_config()
 
@@ -125,7 +126,6 @@ class DocumentSync:
 
         # 检查已删除文件（Redis 中有 hash 但文件不存在）
         if self.redis_client is not None:
-            prefix = config["redis"]["file_hash_prefix"]
             # 通过扫描 active_chunks 的 keys 来检测已删除文件
             for filename in list(self.active_chunks.keys()):
                 if filename not in existing_files:
@@ -142,7 +142,8 @@ class DocumentSync:
     def sync_file(self, filename: str, force: bool = False) -> int:
         """同步单个文件。返回新 chunk 数量。"""
 
-        file_path = self.knowledge_dir / filename
+        filename = validate_client_filename(filename)
+        file_path = resolve_child(self.knowledge_dir, filename)
 
         if not file_path.exists():
             # 文件已删除

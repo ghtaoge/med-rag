@@ -62,3 +62,17 @@ class ConfigurationError(MedRagError):
 
     def __init__(self, message: str):
         super().__init__(message, code="CONFIGURATION_ERROR")
+
+
+class SecurityError(MedRagError):
+    """安全策略拒绝。"""
+
+    def __init__(self, message: str, code: str = "SECURITY_ERROR"):
+        super().__init__(message, code=code)
+
+
+class FileSecurityError(SecurityError):
+    """上传文件未通过安全检查。"""
+
+    def __init__(self, message: str = "文件未通过安全检查"):
+        super().__init__(message, code="FILE_SECURITY_REJECTED")

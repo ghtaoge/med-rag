@@ -79,6 +79,16 @@ DEFAULTS: dict[str, Any] = {
             "model": "glm-4-plus",
         },
     },
+    "security": {
+        "bootstrap_admin_key": "",
+        "max_upload_bytes": 50 * 1024 * 1024,
+        "max_archive_ratio": 100,
+        "max_archive_uncompressed_bytes": 500 * 1024 * 1024,
+        "max_archive_members": 10000,
+    },
+    "cors": {
+        "allowed_origins": ["http://localhost:3000"],
+    },
     "knowledge_dir": "data",
     "whoosh_dir": "whoosh_index",
     "log_level": "INFO",
@@ -98,6 +108,8 @@ ENV_MAPPINGS: dict[str, tuple[str, str | None]] = {
     "DEEPSEEK_API_KEY": ("llm.deepseek", "api_key"),
     "QWEN_API_KEY": ("llm.qwen", "api_key"),
     "ZHIPU_API_KEY": ("llm.zhipu", "api_key"),
+    "RAG_BOOTSTRAP_ADMIN_KEY": ("security", "bootstrap_admin_key"),
+    "RAG_CORS_ORIGINS": ("cors", "allowed_origins"),
 }
 
 # 需要强制转 int 的字段
@@ -120,6 +132,10 @@ INT_FIELDS: list[tuple[str, str]] = [
     ("chunker", "overlap"),
     ("app", "port"),
     ("llm", "max_tokens"),
+    ("security", "max_upload_bytes"),
+    ("security", "max_archive_ratio"),
+    ("security", "max_archive_uncompressed_bytes"),
+    ("security", "max_archive_members"),
 ]
 
 # 需要强制转 float 的字段
@@ -171,6 +187,12 @@ def load_config() -> dict[str, Any]:
         val = _get_nested(config, section, key)
         if val is not None:
             _set_nested(config, section, key, _to_bool(val))
+
+    origins = config["cors"]["allowed_origins"]
+    if isinstance(origins, str):
+        config["cors"]["allowed_origins"] = [
+            item.strip() for item in origins.split(",") if item.strip()
+        ]
 
     return config
 

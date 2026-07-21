@@ -65,20 +65,15 @@ def get_redis_client() -> redis.Redis | None:
 
 @lru_cache
 def get_milvus_store() -> MilvusStore | None:
-    """获取 Milvus 向量存储实例。Milvus 不可用时返回 None。"""
+    """获取延迟连接的 Milvus 存储实例。"""
 
     cfg = get_config()
     store = MilvusStore(
         host=cfg["milvus"]["host"],
         port=cfg["milvus"]["port"],
     )
-    try:
-        store.ping()
-        logger.info("milvus_initialized", collection=cfg["milvus"]["collection_name"])
-        return store
-    except Exception as e:
-        logger.warning("milvus_not_available", error=str(e))
-        return store  # 返回未连接的实例，ping() = False 时各模块降级
+    logger.info("milvus_store_created", collection=cfg["milvus"]["collection_name"])
+    return store
 
 
 @lru_cache

@@ -154,6 +154,13 @@ pytest tests/test_generation/ -v
 - ⚠️ **docker-compose.yml** 中 Milvus/MinIO 的默认密码仅适用于开发环境，**生产部署前必须修改**
 - ⚠️ `.env` 文件已被 `.gitignore` 排除，不会被提交到 Git
 
+### 临时管理鉴权
+
+正式身份与部门权限上线前，文档、评估和引擎信息接口要求请求头
+`X-Med-Rag-Admin-Key`。请将 `RAG_BOOTSTRAP_ADMIN_KEY` 设置为至少 32 位随机值；
+未配置时这些接口会返回 503，不会以匿名方式降级开放。该临时密钥会在本地账户与 RBAC
+上线后移除。
+
 ## License
 
 MIT

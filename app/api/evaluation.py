@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from app.security.bootstrap_auth import verify_bootstrap_admin
 
 from app.core.dependencies import (
     get_config_dep,
     get_milvus_store,
     get_keyword_store,
-    get_retrieval_engine,
     get_llm_engine,
     get_redis_client,
 )
 
-router = APIRouter(prefix="/api/v1/evaluation", tags=["评估"])
+router = APIRouter(
+    prefix="/api/v1/evaluation",
+    tags=["评估"],
+    dependencies=[Depends(verify_bootstrap_admin)],
+)
 
 
 @router.get("/checklist")

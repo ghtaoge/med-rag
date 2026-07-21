@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-import traceback
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -169,6 +168,8 @@ async def med_rag_exception_handler(request: Request, exc: MedRagError) -> JSONR
         "INTENT_ERROR": 503,
         "EVALUATION_ERROR": 500,
         "CONFIGURATION_ERROR": 500,
+        "FILE_SECURITY_REJECTED": 400,
+        "SECURITY_ERROR": 403,
     }
 
     status_code = status_map.get(exc.code, 500)
@@ -176,7 +177,6 @@ async def med_rag_exception_handler(request: Request, exc: MedRagError) -> JSONR
     logger.warning(
         "business_exception",
         code=exc.code,
-        message=exc.message,
         path=request.url.path,
     )
 
@@ -194,9 +194,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
     logger.error(
         "unhandled_exception",
-        error=str(exc),
+        exception_type=type(exc).__name__,
         path=request.url.path,
-        traceback=traceback.format_exc(),
     )
 
     return JSONResponse(

@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.dependencies import get_chat_orchestrator
 from app.core.exceptions import MedRagError
+from app.api.chat import ChatOrchestrator
 
 router = APIRouter(prefix="/api/v1/chat", tags=["问答"])
 
@@ -37,8 +38,11 @@ async def chat_stream(
         except MedRagError as e:
             # 业务异常 → SSE error 事件
             yield f"event: error\ndata: {{\"code\": \"{e.code}\", \"message\": \"{e.message}\"}}\n\n"
-        except Exception as e:
-            yield f"event: error\ndata: {{\"code\": \"INTERNAL_ERROR\", \"message\": \"{str(e)}\"}}\n\n"
+        except Exception:
+            yield (
+                'event: error\ndata: {"code":"INTERNAL_ERROR",'
+                '"message":"内部服务异常，请稍后重试"}\n\n'
+            )
 
     return StreamingResponse(
         event_generator(),

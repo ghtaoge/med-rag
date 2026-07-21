@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from app.core.dependencies import get_config_dep
+from app.security.bootstrap_auth import verify_bootstrap_admin
 
 router = APIRouter(tags=["系统"])
 
@@ -16,7 +17,7 @@ async def health(config: dict = Depends(get_config_dep)):
     return {"status": "ok", "version": config["app"]["version"]}
 
 
-@router.get("/api/v1/engines")
+@router.get("/api/v1/engines", dependencies=[Depends(verify_bootstrap_admin)])
 async def engines(config: dict = Depends(get_config_dep)):
     """查看当前引擎信息。"""
 

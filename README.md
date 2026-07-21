@@ -198,6 +198,21 @@ RAG_SAFETY_EVAL_USE_CLASSIFIER=true python scripts/evaluate_safety.py
 
 策略变更必须同步提升 `RAG_SAFETY_POLICY_VERSION`，重新评审 `data/evaluation/safety_cases.jsonl` 并通过门禁。安全事件只保留输入哈希、脱敏摘要、类别和决策；保留周期应按公司安全审计制度配置，导出时不得包含原始请求正文。
 
+### 隔离文档解析
+
+新上传文件先写入 `quarantine`，API 只做有界流写入、签名和容器结构检查，然后向 RQ 提交一个任务 UUID。隔离 worker 按固定顺序执行 ClamAV、资源限制检查和本地解析，成功后分别写入不可变原件区与纯文本解析区。只有 `ready_for_review` 的版本能提交审核。
+
+Office 与 PDF 优先使用固定版本 `MarkItDown 0.1.6`，禁用插件且只接受本地路径；现有格式 loader 是回退。Pandoc 不进入生产链路，因为它需要外部子进程且不能提高 PDF/OCR 主链路覆盖率。图片 OCR 仍要求预装离线 PaddleOCR 模型，worker 已设置离线模式，不会运行时下载模型。
+
+运维要求：
+
+- ClamAV 签名卷必须持续更新并监控健康状态；扫描器不可用时任务失败关闭。
+- `parser-worker` 不得加入外部网络，不得挂载 Docker socket、宿主目录或云凭据。
+- 调整 CPU、内存、PID、页数、像素或表格上限后，必须重跑恶意文件门禁。
+- `infected` 和 `failed` 任务不可原地重试；修复原因后应重新上传，保留原任务用于审计。
+- 隔离件默认保留 30 天。先运行 `python scripts/cleanup_quarantine.py` 查看数量，经事件负责人批准后再加 `--apply`。
+- 事件调查只允许安全审计人员访问隔离卷；普通 API 永不返回病毒签名、路径、worker ID 或异常正文。
+
 ## License
 
 MIT

@@ -61,6 +61,7 @@
               <th>归属部门</th>
               <th>版本</th>
               <th>状态</th>
+              <th>隔离处理</th>
               <th>审核人</th>
               <th>操作</th>
             </tr>
@@ -76,11 +77,16 @@
               <td><code>{{ shortId(doc.owner_department_id) }}</code></td>
               <td>v{{ doc.version_number }}</td>
               <td><span class="badge" :class="statusClass(doc.status)">{{ statusLabel(doc.status) }}</span></td>
+              <td>
+                <span class="badge" :class="processingClass(doc.processing_status)">
+                  {{ processingLabel(doc.processing_status) }}
+                </span>
+              </td>
               <td>{{ doc.reviewed_by ? shortId(doc.reviewed_by) : '-' }}</td>
               <td>
                 <div class="row-actions">
                   <button
-                    v-if="doc.status === 'draft' && canEditDepartment(doc.owner_department_id)"
+                    v-if="doc.status === 'draft' && doc.processing_status === 'ready_for_review' && canEditDepartment(doc.owner_department_id)"
                     class="mini-button"
                     type="button"
                     :disabled="isWorking(doc)"
@@ -119,7 +125,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   BadgeCheck,
   Ban,
@@ -148,6 +154,7 @@ const filteredDocuments = computed(() => {
 })
 
 onMounted(refresh)
+onUnmounted(() => docStore.stopPolling())
 
 function membershipsFor(departmentId) {
   return (auth.user?.memberships || []).filter(item => item.department_id === departmentId)
@@ -171,6 +178,23 @@ function statusLabel(status) {
 
 function statusClass(status) {
   return { approved: 'badge-success', in_review: 'badge-warning', revoked: 'badge-danger' }[status] || 'badge-info'
+}
+
+function processingLabel(status) {
+  return {
+    quarantined: '隔离检查中',
+    scanning: '安全扫描中',
+    parsing: '解析中',
+    ready_for_review: '待审核',
+    infected: '检测到风险',
+    failed: '处理失败',
+  }[status] || '等待处理'
+}
+
+function processingClass(status) {
+  if (status === 'ready_for_review') return 'badge-success'
+  if (status === 'infected' || status === 'failed') return 'badge-danger'
+  return 'badge-warning'
 }
 
 function shortId(value = '') {

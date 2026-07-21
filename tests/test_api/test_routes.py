@@ -176,8 +176,7 @@ def test_404_unknown_route():
     assert response.status_code == 404
 
 
-def test_upload_document_syncs_immediately(tmp_path):
-    """Uploading should save, validate, and immediately sync the uploaded file."""
+def test_legacy_upload_never_syncs_in_api_process(tmp_path):
 
     from app.api.documents import get_config_dep, get_document_sync
 
@@ -207,14 +206,10 @@ def test_upload_document_syncs_immediately(tmp_path):
         app.dependency_overrides.pop(get_config_dep, None)
         app.dependency_overrides.pop(get_document_sync, None)
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "accepted"
-    assert data["filename"] == "medical.txt"
-    assert data["chunk_count"] == 2
-    assert data["in_index"] is True
-    assert sync.synced_filename == "medical.txt"
-    assert (tmp_path / "medical.txt").exists()
+    assert response.status_code == 410
+    assert response.json()["code"] == "LEGACY_ENDPOINT_RETIRED"
+    assert sync.synced_filename == ""
+    assert not (tmp_path / "medical.txt").exists()
 
 
 def test_delete_uploaded_unsynced_document_does_not_initialize_sync(tmp_path):

@@ -90,6 +90,22 @@ safety:
   restricted_preview_chars: 300
   stream_buffer_chars: 512
 
+storage:
+  root: "data/documents"
+
+parser:
+  queue_name: "med-rag-parse"
+  clamav_host: "clamav"
+  clamav_port: 3310
+  max_pdf_pages: 1000
+  max_image_width: 10000
+  max_image_height: 10000
+  max_sheet_rows: 200000
+  max_sheet_columns: 500
+  max_nonempty_cells: 2000000
+  timeout_seconds: 600
+  quarantine_retention_days: 30
+
 knowledge_dir: data
 whoosh_dir: whoosh_index
 log_level: INFO

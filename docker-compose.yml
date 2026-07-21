@@ -44,6 +44,9 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
+    networks:
+      - default
+      - parser-internal
 
   postgres:
     image: postgres:16-alpine
@@ -58,6 +61,22 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - default
+      - parser-internal
+
+  clamav:
+    image: clamav/clamav:1.4
+    environment:
+      CLAMD_CONF_StreamMaxLength: 50M
+    volumes:
+      - clamav_signatures:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --ping 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    networks: ["parser-internal"]
 
   safety-model:
     image: vllm/vllm-openai:v0.9.2
@@ -94,8 +113,13 @@ services:
       RAG_ENVIRONMENT: production
       RAG_SAFETY_ENABLED: ${RAG_SAFETY_ENABLED:-true}
       RAG_SAFETY_CLASSIFIER_BASE_URL: http://safety-model:8000/v1
+      RAG_STORAGE_ROOT: /data
+      RAG_KNOWLEDGE_DIR: /data
+      RAG_CLAMAV_HOST: clamav
     volumes:
-      - knowledge_data:/app/data
+      - document_quarantine:/data/quarantine
+      - document_parsed:/data/parsed:ro
+      - document_original:/data/original:ro
       - whoosh_data:/app/whoosh_index
     depends_on:
       milvus:
@@ -108,15 +132,58 @@ services:
       - default
       - safety-internal
 
+  parser-worker:
+    build:
+      context: .
+      dockerfile: deploy/parser-worker.Dockerfile
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 8g
+    cpus: 4
+    tmpfs:
+      - /tmp:size=1g,noexec,nosuid,nodev
+      - /data/temporary:size=1g,noexec,nosuid,nodev
+    environment:
+      RAG_DATABASE_URL: postgresql+psycopg://med_rag:${POSTGRES_PASSWORD:-change-me-in-production}@postgres:5432/med_rag
+      RAG_REDIS_HOST: redis
+      RAG_REDIS_PORT: 6379
+      RAG_STORAGE_ROOT: /data
+      RAG_CLAMAV_HOST: clamav
+      RAG_ENVIRONMENT: production
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    networks: ["parser-internal"]
+    volumes:
+      - document_quarantine:/data/quarantine:ro
+      - document_parsed:/data/parsed:rw
+      - document_original:/data/original:rw
+      - model_cache:/models:ro
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+
 volumes:
   milvus_etcd_data:
   milvus_minio_data:
   milvus_data:
   redis_data:
   postgres_data:
-  knowledge_data:
+  clamav_signatures:
+  document_quarantine:
+  document_parsed:
+  document_original:
+  model_cache:
   whoosh_data:
 
 networks:
   safety-internal:
+    internal: true
+  parser-internal:
     internal: true

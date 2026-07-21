@@ -4,8 +4,10 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import AuthorizationError
+from app.core.exceptions import AuthorizationError, DocumentNotParsed
+from app.documents.job_repository import ParseJobRepository
 from app.documents.models import DocumentVisibility, ReviewStatus
+from app.documents.jobs import ParseJob, ParseJobStatus
 from app.documents.service import DocumentWorkflowService
 from app.security.database import Base
 from app.security.models import Department, DepartmentMembership, Role, User
@@ -57,7 +59,7 @@ def _workflow_fixture():
 
 def _draft(service, editor, department_id):
     document_id = str(uuid.uuid4())
-    return service.create_draft(
+    document, version = service.create_draft(
         editor,
         document_id,
         str(uuid.uuid4()),
@@ -72,6 +74,17 @@ def _draft(service, editor, department_id):
         None,
         "request-1",
     )
+    service.session.add(
+        ParseJob(
+            document_id=document.id,
+            document_version_id=version.id,
+            quarantine_storage_key=f"quarantine/{document.id}/{version.id}.txt",
+            parsed_storage_key=f"parsed/{document.id}/{version.id}.txt",
+            status=ParseJobStatus.READY_FOR_REVIEW,
+        )
+    )
+    service.session.commit()
+    return document, version
 
 
 def test_uploaded_document_starts_as_draft():
@@ -106,5 +119,22 @@ def test_reviewer_can_approve_then_revoke():
         assert approved.status == ReviewStatus.APPROVED
         revoked = service.revoke(reviewer, document.id, "superseded", "request-4")
         assert revoked.status == ReviewStatus.REVOKED
+    finally:
+        session.close()
+
+
+def test_approval_rechecks_parser_release_gate():
+    session, service, editor, reviewer, department_id = _workflow_fixture()
+    try:
+        document, version = _draft(service, editor, department_id)
+        service.submit_review(editor, document.id, "ready", "request-2")
+        parse_job = ParseJobRepository(session).for_version(version.id)
+        parse_job.status = ParseJobStatus.FAILED
+        parse_job.parsed_storage_key = None
+        session.commit()
+
+        with pytest.raises(DocumentNotParsed):
+            service.approve(reviewer, document.id, "verified", "request-3")
+        assert version.status == ReviewStatus.IN_REVIEW
     finally:
         session.close()

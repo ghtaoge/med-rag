@@ -7,6 +7,7 @@ from app.core.config import get_config
 from app.security.database import Base
 from app.security import models as security_models  # noqa: F401
 from app.documents import models as document_models  # noqa: F401
+from app.documents import jobs as document_jobs  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:

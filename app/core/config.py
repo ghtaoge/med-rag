@@ -111,6 +111,20 @@ DEFAULTS: dict[str, Any] = {
         "restricted_preview_chars": 300,
         "stream_buffer_chars": 512,
     },
+    "storage": {"root": "data/documents"},
+    "parser": {
+        "queue_name": "med-rag-parse",
+        "clamav_host": "clamav",
+        "clamav_port": 3310,
+        "max_pdf_pages": 1000,
+        "max_image_width": 10000,
+        "max_image_height": 10000,
+        "max_sheet_rows": 200000,
+        "max_sheet_columns": 500,
+        "max_nonempty_cells": 2000000,
+        "timeout_seconds": 600,
+        "quarantine_retention_days": 30,
+    },
     "knowledge_dir": "data",
     "whoosh_dir": "whoosh_index",
     "log_level": "INFO",
@@ -151,6 +165,15 @@ ENV_MAPPINGS: dict[str, tuple[str, str | None]] = {
         "restricted_preview_chars",
     ),
     "RAG_SAFETY_STREAM_BUFFER_CHARS": ("safety", "stream_buffer_chars"),
+    "RAG_STORAGE_ROOT": ("storage", "root"),
+    "RAG_PARSE_QUEUE_NAME": ("parser", "queue_name"),
+    "RAG_CLAMAV_HOST": ("parser", "clamav_host"),
+    "RAG_CLAMAV_PORT": ("parser", "clamav_port"),
+    "RAG_PARSER_TIMEOUT_SECONDS": ("parser", "timeout_seconds"),
+    "RAG_QUARANTINE_RETENTION_DAYS": (
+        "parser",
+        "quarantine_retention_days",
+    ),
 }
 
 # 需要强制转 int 的字段
@@ -185,6 +208,15 @@ INT_FIELDS: list[tuple[str, str]] = [
     ("safety", "restricted_top_k"),
     ("safety", "restricted_preview_chars"),
     ("safety", "stream_buffer_chars"),
+    ("parser", "clamav_port"),
+    ("parser", "max_pdf_pages"),
+    ("parser", "max_image_width"),
+    ("parser", "max_image_height"),
+    ("parser", "max_sheet_rows"),
+    ("parser", "max_sheet_columns"),
+    ("parser", "max_nonempty_cells"),
+    ("parser", "timeout_seconds"),
+    ("parser", "quarantine_retention_days"),
 ]
 
 # 需要强制转 float 的字段

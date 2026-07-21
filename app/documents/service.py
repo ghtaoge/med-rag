@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import AuthorizationError, NotFoundError, ValidationError
+from app.core.exceptions import (
+    AuthorizationError,
+    DocumentNotParsed,
+    NotFoundError,
+    ValidationError,
+)
+from app.documents.job_repository import ParseJobRepository
+from app.documents.jobs import is_releaseable
 from app.documents.models import (
     DocumentVisibility,
     DocumentVisibleDepartment,
@@ -50,6 +57,7 @@ class DocumentWorkflowService:
         size: int,
         expires_at: datetime | None,
         request_id: str,
+        commit: bool = True,
     ) -> tuple[KnowledgeDocument, KnowledgeDocumentVersion]:
         ensure_permission(principal, Permission.DOCUMENT_EDIT, owner_department_id)
         document = KnowledgeDocument(
@@ -93,7 +101,10 @@ class DocumentWorkflowService:
             request_id,
             after_state={"status": ReviewStatus.DRAFT.value},
         )
-        self.session.commit()
+        if commit:
+            self.session.commit()
+        else:
+            self.session.flush()
         return document, version
 
     def submit_review(
@@ -106,6 +117,9 @@ class DocumentWorkflowService:
         document = self._visible_document(principal, document_id)
         ensure_permission(principal, Permission.DOCUMENT_EDIT, document.owner_department_id)
         version = self._current_version(document_id)
+        parse_job = ParseJobRepository(self.session).for_version(version.id)
+        if not is_releaseable(parse_job):
+            raise DocumentNotParsed()
         self._transition(version, ReviewStatus.IN_REVIEW)
         self._review(version, principal, "submit", reason)
         self.audit.record(
@@ -132,6 +146,10 @@ class DocumentWorkflowService:
         document = self._visible_document(principal, document_id)
         ensure_permission(principal, Permission.DOCUMENT_APPROVE, document.owner_department_id)
         version = self._current_version(document_id)
+        if not is_releaseable(
+            ParseJobRepository(self.session).for_version(version.id)
+        ):
+            raise DocumentNotParsed()
         if version.status != ReviewStatus.IN_REVIEW:
             raise ValidationError("文档尚未进入审核状态")
         if version.last_edited_by == principal.user_id:

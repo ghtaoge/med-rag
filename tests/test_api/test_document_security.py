@@ -23,7 +23,7 @@ def _config(tmp_path, max_bytes=128):
     }
 
 
-def test_upload_rejects_body_over_limit(tmp_path):
+def test_retired_upload_endpoint_is_gone(tmp_path):
     app.dependency_overrides[get_config_dep] = lambda: _config(tmp_path)
     app.dependency_overrides[get_document_sync] = lambda: RecordingSync()
     try:
@@ -34,12 +34,12 @@ def test_upload_rejects_body_over_limit(tmp_path):
     finally:
         app.dependency_overrides.pop(get_config_dep, None)
         app.dependency_overrides.pop(get_document_sync, None)
-    assert response.status_code == 400
-    assert response.json()["code"] == "FILE_SECURITY_REJECTED"
+    assert response.status_code == 410
+    assert response.json()["code"] == "LEGACY_ENDPOINT_RETIRED"
     assert not (tmp_path / "large.txt").exists()
 
 
-def test_upload_rejects_fake_pdf(tmp_path):
+def test_retired_upload_does_not_inspect_in_api_process(tmp_path):
     app.dependency_overrides[get_config_dep] = lambda: _config(tmp_path, 1024)
     app.dependency_overrides[get_document_sync] = lambda: RecordingSync()
     try:
@@ -50,7 +50,8 @@ def test_upload_rejects_fake_pdf(tmp_path):
     finally:
         app.dependency_overrides.pop(get_config_dep, None)
         app.dependency_overrides.pop(get_document_sync, None)
-    assert response.status_code == 400
+    assert response.status_code == 410
+    assert response.json()["code"] == "LEGACY_ENDPOINT_RETIRED"
     assert not (tmp_path / "fake.pdf").exists()
 
 

@@ -30,6 +30,8 @@ from app.intent.classifier import IntentClassifier
 from app.evaluation.correctness_check import CorrectnessChecker
 from app.documents.sync import DocumentSync
 from app.documents.validator import DocumentValidator
+from app.documents.queue import ParseQueue
+from app.documents.storage import DocumentStorage
 
 from app.api.chat import ChatOrchestrator
 from app.security.auth_service import AuthService
@@ -192,6 +194,25 @@ def get_document_validator() -> DocumentValidator:
     """获取文档校验器实例。"""
 
     return DocumentValidator()
+
+
+@lru_cache
+def get_document_storage() -> DocumentStorage:
+    return DocumentStorage(Path(get_config()["storage"]["root"]))
+
+
+@lru_cache
+def get_parse_queue() -> ParseQueue:
+    from rq import Queue
+
+    from app.core.exceptions import ParseQueueUnavailable
+
+    client = get_redis_client()
+    if client is None:
+        raise ParseQueueUnavailable()
+    return ParseQueue(
+        Queue(get_config()["parser"]["queue_name"], connection=client)
+    )
 
 
 @lru_cache

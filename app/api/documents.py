@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import hashlib
 import json
+import os
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -18,19 +18,31 @@ from app.core.dependencies import (
     get_document_sync,
     get_document_validator,
     get_db_session,
+    get_document_storage,
+    get_parse_queue,
 )
 from app.core.exceptions import (
     DocumentError,
     FileSecurityError,
     MedRagError,
     NotFoundError,
+    LegacyEndpointRetired,
+    ParseQueueUnavailable,
     ValidationError,
 )
 from app.core.models import ChunkMetadata
 from app.documents.models import DocumentVisibility, KnowledgeDocumentVersion, ReviewStatus
 from app.documents.repository import DocumentRepository
 from app.documents.service import DocumentWorkflowService
-from app.documents.file_safety import inspect_file, resolve_child, validate_client_filename
+from app.documents.job_repository import ParseJobRepository
+from app.documents.jobs import ParseJob, ParseJobStatus, is_releaseable
+from app.documents.queue import ParseQueue
+from app.documents.storage import DocumentStorage
+from app.documents.file_safety import (
+    inspect_upload_envelope,
+    resolve_child,
+    validate_client_filename,
+)
 from app.documents.sync import DocumentSync
 from app.documents.validator import DocumentValidator
 from app.documents.index_state import load_index_state, remove_index_state
@@ -52,7 +64,20 @@ def _request_id(request: Request) -> str:
     return request.headers.get("X-Request-ID", uuid.uuid4().hex)
 
 
-def _version_payload(document, version, visible_department_ids: tuple[str, ...]) -> dict:
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _version_payload(
+    document,
+    version,
+    visible_department_ids: tuple[str, ...],
+    parse_job: ParseJob | None = None,
+) -> dict:
     return {
         "document_id": document.id,
         "version_id": version.id,
@@ -70,6 +95,9 @@ def _version_payload(document, version, visible_department_ids: tuple[str, ...])
         "created_at": version.created_at,
         "published_at": version.published_at,
         "expires_at": version.expires_at,
+        "parse_job_id": parse_job.id if parse_job else None,
+        "processing_status": parse_job.status.value if parse_job else None,
+        "processing_error_code": parse_job.error_code if parse_job else None,
     }
 
 
@@ -85,14 +113,6 @@ def _parse_visible_departments(raw: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value))
 
 
-def _managed_file_path(knowledge_dir: Path, storage_key: str) -> Path:
-    root = knowledge_dir.resolve()
-    path = (root / storage_key).resolve()
-    if root not in path.parents:
-        raise DocumentError("文档存储路径越界")
-    return path
-
-
 def _index_approved_version(
     sync: DocumentSync,
     config: dict,
@@ -100,10 +120,16 @@ def _index_approved_version(
     document,
     version: KnowledgeDocumentVersion,
 ) -> int:
+    parse_job = ParseJobRepository(repository.session).for_version(version.id)
+    if not is_releaseable(parse_job):
+        from app.core.exceptions import DocumentNotParsed
+
+        raise DocumentNotParsed()
+    storage = DocumentStorage(Path(config["storage"]["root"]))
     visible_departments = repository.visible_department_ids(document.id)
     expires_at_epoch = int(version.expires_at.timestamp()) if version.expires_at else 0
     return sync.sync_managed_version(
-        _managed_file_path(Path(config["knowledge_dir"]), version.storage_key),
+        storage.resolve(parse_job.parsed_storage_key),
         version.storage_key,
         ChunkMetadata(
             source=version.storage_key,
@@ -117,7 +143,7 @@ def _index_approved_version(
     )
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=202)
 async def create_document(
     request: Request,
     file: UploadFile = File(..., description="上传文件"),
@@ -128,28 +154,28 @@ async def create_document(
     principal: Principal = Depends(get_current_principal),
     session: Session = Depends(get_db_session),
     config: dict = Depends(get_config_dep),
-    validator: DocumentValidator = Depends(get_document_validator),
+    storage: DocumentStorage = Depends(get_document_storage),
+    queue: ParseQueue = Depends(get_parse_queue),
 ):
-    """Store an inspected document version as a non-indexed draft."""
+    """Store an opaque quarantine object and enqueue isolated parsing."""
 
     document_id = str(uuid.uuid4())
     version_id = str(uuid.uuid4())
     filename = validate_client_filename(file.filename)
     suffix = Path(filename).suffix.lower()
-    storage_key = f"{document_id}/{version_id}{suffix}"
-    directory = Path(config["knowledge_dir"]) / document_id
+    storage_key = storage.allocate_quarantine_key(
+        document_id, version_id, suffix
+    )
+    destination = storage.resolve(storage_key)
+    job_id = str(uuid.uuid4())
     try:
         _, stored_path = await _save_bounded_upload(
             file,
-            directory,
+            destination.parent,
             config.get("security", {}).get("max_upload_bytes", 50 * 1024 * 1024),
-            destination_name=f"{version_id}{suffix}",
+            destination_name=destination.name,
         )
-        validation = validator.validate(stored_path)
-        if not validation.is_valid:
-            stored_path.unlink(missing_ok=True)
-            raise ValidationError("文档内容校验失败: " + "; ".join(validation.errors))
-        file_hash = hashlib.sha256(stored_path.read_bytes()).hexdigest()
+        file_hash = _file_sha256(stored_path)
         workflow = DocumentWorkflowService(session)
         document, version = workflow.create_draft(
             principal=principal,
@@ -165,20 +191,40 @@ async def create_document(
             size=stored_path.stat().st_size,
             expires_at=expires_at,
             request_id=_request_id(request),
+            commit=False,
         )
+        parse_job = ParseJob(
+            id=job_id,
+            document_id=document_id,
+            document_version_id=version_id,
+            quarantine_storage_key=storage_key,
+            status=ParseJobStatus.QUARANTINED,
+        )
+        ParseJobRepository(session).create(parse_job)
+        session.commit()
+        try:
+            queue.submit(job_id)
+        except Exception as exc:
+            ParseJobRepository(session).transition(
+                job_id,
+                ParseJobStatus.FAILED,
+                error_code="PARSE_QUEUE_UNAVAILABLE",
+            )
+            raise ParseQueueUnavailable() from exc
     except MedRagError:
-        _managed_file_path(Path(config["knowledge_dir"]), storage_key).unlink(
-            missing_ok=True
-        )
+        if session.get(ParseJob, job_id) is None:
+            destination.unlink(missing_ok=True)
         raise
     except Exception as exc:
-        _managed_file_path(Path(config["knowledge_dir"]), storage_key).unlink(
-            missing_ok=True
-        )
+        if session.get(ParseJob, job_id) is None:
+            destination.unlink(missing_ok=True)
         raise DocumentError("创建文档草稿失败") from exc
     repository = DocumentRepository(session)
     return _version_payload(
-        document, version, repository.visible_department_ids(document.id)
+        document,
+        version,
+        repository.visible_department_ids(document.id),
+        ParseJobRepository(session).for_version(version.id),
     )
 
 
@@ -195,6 +241,7 @@ def list_managed_documents(
                 document,
                 version,
                 repository.visible_department_ids(document.id),
+                ParseJobRepository(session).for_version(version.id),
             )
             for document, version in rows
         ]
@@ -226,7 +273,7 @@ async def _save_bounded_upload(
                 output.write(chunk)
             output.flush()
             os.fsync(output.fileno())
-        inspect_file(temporary, file.content_type)
+        inspect_upload_envelope(temporary, file.content_type)
         os.replace(temporary, destination)
         return filename, destination
     finally:
@@ -248,6 +295,7 @@ async def upload_document(
 
     response.headers["Deprecation"] = "true"
     response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
+    raise LegacyEndpointRetired()
 
     knowledge_dir = Path(config["knowledge_dir"])
     filename = validate_client_filename(file.filename)
@@ -309,6 +357,7 @@ async def sync_all_documents(
 
     response.headers["Deprecation"] = "true"
     response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
+    raise LegacyEndpointRetired()
 
     # 先把变更列表返回给前端展示，再执行实际同步。
     # sync_all 内部仍会按当前文件状态重新计算，保证返回的 chunk 数以最终索引为准。
@@ -340,6 +389,7 @@ async def sync_single_document(
 
     response.headers["Deprecation"] = "true"
     response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
+    raise LegacyEndpointRetired()
 
     filename = validate_client_filename(filename)
     try:
@@ -367,6 +417,7 @@ async def validate_document(
 
     response.headers["Deprecation"] = "true"
     response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
+    raise LegacyEndpointRetired()
 
     knowledge_dir = Path(config["knowledge_dir"])
     filename = validate_client_filename(file.filename)
@@ -390,6 +441,35 @@ async def validate_document(
         }
     finally:
         resolve_child(knowledge_dir, temp_name).unlink(missing_ok=True)
+
+
+@router.get("/jobs/{job_id}")
+def get_parse_job(
+    job_id: str,
+    principal: Principal = Depends(get_current_principal),
+    session: Session = Depends(get_db_session),
+):
+    job = ParseJobRepository(session).get(job_id)
+    if job is None:
+        raise NotFoundError("处理任务不存在")
+    document_repository = DocumentRepository(session)
+    document = document_repository.get_document(job.document_id)
+    if document is None or not document_repository.is_visible(
+        document, principal.department_ids
+    ):
+        raise NotFoundError("处理任务不存在")
+    return {
+        "id": job.id,
+        "document_id": job.document_id,
+        "version_id": job.document_version_id,
+        "status": job.status.value,
+        "error_code": job.error_code,
+        "parser_name": job.parser_name,
+        "parser_version": job.parser_version,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+    }
 
 
 @router.get(
@@ -482,7 +562,10 @@ def get_managed_document(
     if version is None:
         raise NotFoundError("文档不存在")
     return _version_payload(
-        document, version, repository.visible_department_ids(document.id)
+        document,
+        version,
+        repository.visible_department_ids(document.id),
+        ParseJobRepository(session).for_version(version.id),
     )
 
 
@@ -502,6 +585,7 @@ def submit_document_review(
         document,
         version,
         DocumentRepository(session).visible_department_ids(document_id),
+        ParseJobRepository(session).for_version(version.id),
     )
 
 
@@ -525,7 +609,10 @@ def approve_document(
         sync, config, repository, document, version
     )
     response = _version_payload(
-        document, version, repository.visible_department_ids(document_id)
+        document,
+        version,
+        repository.visible_department_ids(document_id),
+        ParseJobRepository(session).for_version(version.id),
     )
     response["chunk_count"] = chunk_count
     return response
@@ -551,7 +638,10 @@ def revoke_document(
     sync.remove_source(source)
     document = repository.get_document(document_id)
     return _version_payload(
-        document, version, repository.visible_department_ids(document_id)
+        document,
+        version,
+        repository.visible_department_ids(document_id),
+        ParseJobRepository(session).for_version(version.id),
     )
 
 

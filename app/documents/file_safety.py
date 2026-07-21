@@ -155,3 +155,36 @@ def inspect_file(path: Path, declared_mime: str | None = None) -> str:
         if normalized_mime not in _ALLOWED_MIMES[detected]:
             raise FileSecurityError("声明 MIME 与文件内容不一致")
     return detected
+
+
+def inspect_upload_envelope(path: Path, declared_mime: str | None = None) -> str:
+    """Check only size, extension, MIME, and a small magic prefix in the API."""
+
+    size = path.stat().st_size
+    if size <= 0:
+        raise FileSecurityError("文件为空")
+    if size > get_config()["security"]["max_upload_bytes"]:
+        raise FileSecurityError("文件大小超过限制")
+    suffix = path.suffix.lower()
+    with path.open("rb") as source:
+        prefix = source.read(16)
+    if suffix == ".pdf":
+        valid = prefix.startswith(b"%PDF-")
+    elif suffix in _OFFICE_MARKERS:
+        valid = prefix.startswith(b"PK\x03\x04")
+    elif suffix in _IMAGE_SIGNATURES:
+        expected = _IMAGE_SIGNATURES[suffix]
+        signatures = expected if isinstance(expected, tuple) else (expected,)
+        valid = any(prefix.startswith(signature) for signature in signatures)
+    elif suffix in {".txt", ".md", ".csv"}:
+        valid = True
+    else:
+        raise FileSecurityError("不支持的文件格式")
+    if not valid:
+        raise FileSecurityError("文件扩展名与内容不一致")
+    detected = suffix[1:]
+    if declared_mime:
+        normalized_mime = declared_mime.split(";", 1)[0].strip().lower()
+        if normalized_mime not in _ALLOWED_MIMES[detected]:
+            raise FileSecurityError("声明 MIME 与文件内容不一致")
+    return detected

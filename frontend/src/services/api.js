@@ -195,6 +195,10 @@ export function listDocuments() {
   return api.get('/api/v1/documents')
 }
 
+export function getParseJob(jobId) {
+  return api.get(`/api/v1/documents/jobs/${jobId}`)
+}
+
 export function uploadDocument(
   file,
   ownerDepartmentId,

@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 
 import {
   approveDocument,
+  getParseJob,
   listDocuments,
   reauthenticate,
   revokeDocument,
@@ -15,6 +16,8 @@ export const useDocumentStore = defineStore('document', {
     documents: [],
     uploading: false,
     workingDocumentId: '',
+    jobs: {},
+    polling: {},
   }),
 
   getters: {
@@ -27,6 +30,19 @@ export const useDocumentStore = defineStore('document', {
       try {
         const response = await listDocuments()
         this.documents = response.data.documents || []
+        for (const document of this.documents) {
+          if (document.parse_job_id) {
+            this.applyJob({
+              id: document.parse_job_id,
+              document_id: document.document_id,
+              status: document.processing_status,
+              error_code: document.processing_error_code,
+            })
+            if (!this.jobs[document.parse_job_id].terminal) {
+              this.pollJob(document.parse_job_id)
+            }
+          }
+        }
       } catch {
         this.documents = []
       }
@@ -42,7 +58,16 @@ export const useDocumentStore = defineStore('document', {
           visibleDepartmentIds,
         )
         await this.loadDocuments()
-        return response.data
+        const result = response.data
+        if (result.parse_job_id) {
+          this.applyJob({
+            id: result.parse_job_id,
+            document_id: result.document_id,
+            status: result.processing_status,
+          })
+          this.pollJob(result.parse_job_id)
+        }
+        return result
       } finally {
         this.uploading = false
       }
@@ -82,6 +107,47 @@ export const useDocumentStore = defineStore('document', {
       } finally {
         this.workingDocumentId = ''
       }
+    },
+
+    applyJob(job) {
+      const terminal = ['ready_for_review', 'infected', 'failed'].includes(job.status)
+      this.jobs[job.id] = {
+        ...this.jobs[job.id],
+        ...job,
+        terminal,
+        canRetry: job.status === 'failed',
+      }
+      const document = this.documents.find(item => item.parse_job_id === job.id)
+      if (document) {
+        document.processing_status = job.status
+        document.processing_error_code = job.error_code || null
+      }
+    },
+
+    async pollJob(jobId) {
+      if (this.polling[jobId]) return
+      this.polling[jobId] = true
+      const intervals = [1000, 2000, 4000, 8000]
+      let attempt = 0
+      try {
+        while (this.polling[jobId]) {
+          const response = await getParseJob(jobId)
+          this.applyJob(response.data)
+          if (this.jobs[jobId].terminal) {
+            await this.loadDocuments()
+            break
+          }
+          const delay = intervals[Math.min(attempt, intervals.length - 1)]
+          attempt += 1
+          await new Promise(resolve => window.setTimeout(resolve, delay))
+        }
+      } finally {
+        delete this.polling[jobId]
+      }
+    },
+
+    stopPolling() {
+      for (const jobId of Object.keys(this.polling)) delete this.polling[jobId]
     },
   },
 })

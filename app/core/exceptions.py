@@ -129,3 +129,21 @@ class OutputSafetyBlocked(SecurityError):
 class SafetyAuditUnavailable(SecurityError):
     def __init__(self):
         super().__init__("安全审计服务不可用", code="SAFETY_AUDIT_UNAVAILABLE")
+
+
+class DocumentNotParsed(DocumentError):
+    def __init__(self):
+        super().__init__("文档尚未完成隔离解析")
+        self.code = "DOCUMENT_NOT_PARSED"
+
+
+class ParseQueueUnavailable(DocumentError):
+    def __init__(self):
+        super().__init__("文档解析队列不可用")
+        self.code = "PARSE_QUEUE_UNAVAILABLE"
+
+
+class LegacyEndpointRetired(DocumentError):
+    def __init__(self):
+        super().__init__("旧文件名文档接口已停用，请使用异步文档工作流")
+        self.code = "LEGACY_ENDPOINT_RETIRED"

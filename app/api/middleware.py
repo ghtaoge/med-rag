@@ -179,6 +179,9 @@ async def med_rag_exception_handler(request: Request, exc: MedRagError) -> JSONR
         "SAFETY_POLICY_BLOCKED": 403,
         "OUTPUT_SAFETY_BLOCKED": 403,
         "SAFETY_AUDIT_UNAVAILABLE": 503,
+        "DOCUMENT_NOT_PARSED": 409,
+        "PARSE_QUEUE_UNAVAILABLE": 503,
+        "LEGACY_ENDPOINT_RETIRED": 410,
     }
 
     status_code = status_map.get(exc.code, 500)

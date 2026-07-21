@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.core.config import get_config
 from app.core.exceptions import DocumentError
-from app.core.models import DocumentChunk
+from app.core.models import ChunkMetadata, DocumentChunk
 from app.documents.loader import load_document
 from app.documents.chunker import chunk_text, chunk_markdown
 from app.documents.index_state import set_index_state, remove_index_state
@@ -150,49 +150,103 @@ class DocumentSync:
             self._remove_chunks(filename)
             return 0
 
-        # 加载文档
+        return self._index_path(file_path, filename)
+
+    def sync_managed_version(
+        self,
+        file_path: Path,
+        source: str,
+        metadata: ChunkMetadata,
+    ) -> int:
+        """Index one approved immutable document version with its exact ACL."""
+
+        path = file_path.resolve()
+        root = self.knowledge_dir.resolve()
+        if path != root and root not in path.parents:
+            raise DocumentError("文档存储路径越界")
+        if not path.is_file():
+            raise DocumentError("文档版本文件不存在")
+        return self._index_path(path, source, metadata)
+
+    def _index_path(
+        self,
+        file_path: Path,
+        source: str,
+        metadata: ChunkMetadata | None = None,
+    ) -> int:
+        """Load, chunk, and replace one logical source in both indexes."""
+
         try:
             text = load_document(file_path)
         except Exception as e:
-            raise DocumentError(f"加载文件 {filename} 失败: {e}")
+            raise DocumentError(f"加载文件 {source} 失败: {e}")
 
         # 切块
-        if filename.endswith(".md"):
+        if file_path.suffix.lower() == ".md":
             chunks = chunk_markdown(
                 text,
-                source=filename,
+                source=source,
                 min_size=config["chunker"]["min_chunk_size"],
                 max_size=config["chunker"]["max_chunk_size"],
             )
         else:
             chunks = chunk_text(
                 text,
-                source=filename,
+                source=source,
                 min_size=config["chunker"]["min_chunk_size"],
                 max_size=config["chunker"]["max_chunk_size"],
                 overlap=config["chunker"]["overlap"],
             )
 
         # 写入 staging（双缓冲）
-        self.staging_chunks[filename] = chunks
+        if metadata is not None:
+            for chunk in chunks:
+                chunk.metadata = ChunkMetadata(
+                    source=source,
+                    chunk_type=chunk.metadata.chunk_type,
+                    heading=chunk.metadata.heading,
+                    page_num=chunk.metadata.page_num,
+                    section=chunk.metadata.section,
+                    doc_type=chunk.metadata.doc_type,
+                    document_id=metadata.document_id,
+                    document_version_id=metadata.document_version_id,
+                    owner_department_id=metadata.owner_department_id,
+                    visible_department_ids=metadata.visible_department_ids,
+                    review_status=metadata.review_status,
+                    expires_at_epoch=metadata.expires_at_epoch,
+                )
+
+        self.staging_chunks[source] = chunks
 
         # 写入向量库和关键词索引
         if self.milvus_store is not None:
-            self.milvus_store.delete_chunks(filename)
+            self.milvus_store.delete_chunks(source)
             self.milvus_store.add_chunks(chunks)
 
         if self.keyword_store is not None:
-            self.keyword_store.delete_chunks(filename)
+            self.keyword_store.delete_chunks(source)
             self.keyword_store.add_chunks(chunks)
 
         # 更新 Redis hash
-        self._set_stored_hash(filename, self._file_hash(file_path))
-        set_index_state(self.knowledge_dir, filename, len(chunks))
+        self._set_stored_hash(source, self._file_hash(file_path))
+        set_index_state(self.knowledge_dir, source, len(chunks))
 
         # Swap：从 staging 移到 active
-        self.active_chunks[filename] = self.staging_chunks.pop(filename)
+        self.active_chunks[source] = self.staging_chunks.pop(source)
 
         return len(chunks)
+
+    def remove_source(self, source: str) -> None:
+        """Remove a managed document version from every index."""
+
+        self.active_chunks.pop(source, None)
+        self.staging_chunks.pop(source, None)
+        if self.milvus_store is not None:
+            self.milvus_store.delete_chunks(source)
+        if self.keyword_store is not None:
+            self.keyword_store.delete_chunks(source)
+        self._delete_stored_hash(source)
+        remove_index_state(self.knowledge_dir, source)
 
     def sync_all(self) -> int:
         """全量同步所有变更文件。返回总 chunk 数量。"""

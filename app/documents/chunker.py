@@ -186,7 +186,8 @@ def chunk_markdown(
 
         # 独立表格开始 → flush 之前内容
         if line.strip().startswith("|") and not any(
-            l.strip().startswith("|") for l in current_content_lines[-3:]
+            previous_line.strip().startswith("|")
+            for previous_line in current_content_lines[-3:]
         ):
             flush_current()
             current_content_lines = [line]

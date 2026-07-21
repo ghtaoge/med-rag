@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from app.documents.sync import DocumentSync, FileChange
-from app.core.models import DocumentChunk, ChunkMetadata
+from app.documents.sync import DocumentSync
+from app.core.models import DocumentChunk
 
 
 def test_file_hash_calculation():

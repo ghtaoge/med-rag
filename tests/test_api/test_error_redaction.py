@@ -1,20 +1,25 @@
 from fastapi.testclient import TestClient
 
-from app.api import chat_routes
+from app.core.dependencies import get_chat_orchestrator
 from app.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
 
 
-def test_sse_error_never_returns_exception_text(monkeypatch):
-    def explode():
-        raise RuntimeError("postgresql://admin:secret@internal-db/private")
+def test_sse_error_never_returns_exception_text():
+    class ExplodingOrchestrator:
+        async def chat_stream(self, question, principal):
+            raise RuntimeError("postgresql://admin:secret@internal-db/private")
+            yield
 
-    monkeypatch.setattr(chat_routes, "get_chat_orchestrator", explode)
-    body = client.get("/api/v1/chat/stream?question=test").text
-    assert "secret" not in body
-    assert "internal-db" not in body
-    assert "INTERNAL_ERROR" in body
+    app.dependency_overrides[get_chat_orchestrator] = lambda: ExplodingOrchestrator()
+    try:
+        body = client.get("/api/v1/chat/stream?question=test").text
+        assert "secret" not in body
+        assert "internal-db" not in body
+        assert "INTERNAL_ERROR" in body
+    finally:
+        app.dependency_overrides.pop(get_chat_orchestrator, None)
 
 
 def test_unknown_cors_origin_is_not_allowed():

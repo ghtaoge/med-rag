@@ -1,4 +1,4 @@
-"""问答路由 — SSE 流式 + 非流式问答。"""
+"""Authenticated chat, streaming, and user-scoped session routes."""
 
 from __future__ import annotations
 
@@ -6,38 +6,41 @@ import asyncio
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
-from app.core.dependencies import get_chat_orchestrator
-from app.core.exceptions import MedRagError
 from app.api.chat import ChatOrchestrator
+from app.core.dependencies import get_chat_orchestrator
+from app.core.exceptions import MedRagError, NotFoundError
+from app.security.permissions import Permission, permission_dependency
+from app.security.principal import Principal, get_current_principal
 
-router = APIRouter(prefix="/api/v1/chat", tags=["问答"])
+router = APIRouter(
+    prefix="/api/v1/chat",
+    tags=["问答"],
+    dependencies=[Depends(permission_dependency(Permission.CHAT))],
+)
 
 
-@router.api_route("/stream", methods=["GET", "POST"])
-async def chat_stream(
-    question: str = Query(..., description="用户问题"),
-):
-    """流式问答 — SSE 事件流。
+class ChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=8000)
 
-    事件序列：intent → search_start → search_result → generation_start → token* → generation_end → correctness → done
-    """
 
+def _stream_response(
+    question: str,
+    principal: Principal,
+    orchestrator: ChatOrchestrator,
+) -> StreamingResponse:
     async def event_generator():
-        # 先发送一帧 SSE 注释帧，让浏览器尽快进入 connected 状态。
-        # 即使后续依赖初始化、检索或 LLM 首 token 较慢，前端也不会误判为连接断开。
         yield ": connected\n\n"
         await asyncio.sleep(0)
         try:
-            # 在生成器内部延迟创建编排器，避免 FastAPI 在建立流响应前完成所有重依赖工作。
-            # 对 SSE 来说，越早把响应头和首帧发给客户端，用户侧的“断开”误报越少。
-            orchestrator = get_chat_orchestrator()
-            stream = orchestrator.chat_stream(question)
-            async for event in stream:
+            async for event in orchestrator.chat_stream(question, principal):
                 yield event
-        except MedRagError as e:
-            # 业务异常 → SSE error 事件
-            yield f"event: error\ndata: {{\"code\": \"{e.code}\", \"message\": \"{e.message}\"}}\n\n"
+        except MedRagError as exc:
+            yield (
+                f'event: error\ndata: {{"code": "{exc.code}", '
+                f'"message": "{exc.message}"}}\n\n'
+            )
         except Exception:
             yield (
                 'event: error\ndata: {"code":"INTERNAL_ERROR",'
@@ -48,7 +51,6 @@ async def chat_stream(
         event_generator(),
         media_type="text/event-stream",
         headers={
-            # 禁用代理和浏览器侧缓冲，保证 token 能按事件流实时到达前端。
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
@@ -56,15 +58,31 @@ async def chat_stream(
     )
 
 
+@router.get("/stream", deprecated=True)
+async def chat_stream_legacy(
+    question: str = Query(..., description="用户问题"),
+    principal: Principal = Depends(get_current_principal),
+    orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
+):
+    return _stream_response(question, principal, orchestrator)
+
+
+@router.post("/stream")
+async def chat_stream(
+    payload: ChatRequest,
+    principal: Principal = Depends(get_current_principal),
+    orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
+):
+    return _stream_response(payload.question, principal, orchestrator)
+
+
 @router.post("/complete")
 async def chat_complete(
     question: str = Query(..., description="用户问题"),
     orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
+    principal: Principal = Depends(get_current_principal),
 ):
-    """非流式问答 — 返回完整 JSON 响应。"""
-
-    session = await orchestrator.chat(question)
-
+    session = await orchestrator.chat(question, principal)
     return {
         "session_id": session.session_id,
         "question": session.question,
@@ -83,12 +101,14 @@ async def chat_complete(
         },
         "sources": [
             {
-                "id": s.chunk.id,
-                "source": s.chunk.source,
-                "score": s.score,
-                "content_preview": s.chunk.content[:200],
+                "id": result.chunk.id,
+                "source": result.chunk.source,
+                "score": result.score,
+                "content_preview": result.chunk.content[:200],
+                "document_id": result.chunk.metadata.document_id,
+                "document_version_id": result.chunk.metadata.document_version_id,
             }
-            for s in session.sources
+            for result in session.sources
         ],
         "created_at": session.created_at.isoformat(),
     }
@@ -98,25 +118,20 @@ async def chat_complete(
 async def list_sessions(
     limit: int = Query(20, ge=1, le=100, description="返回数量"),
     orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
+    principal: Principal = Depends(get_current_principal),
 ):
-    """列出最近的问答会话。"""
-
-    return {"sessions": orchestrator.list_sessions(limit)}
+    return {"sessions": orchestrator.list_sessions(principal, limit)}
 
 
 @router.get("/sessions/{session_id}")
 async def get_session(
     session_id: str,
     orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
+    principal: Principal = Depends(get_current_principal),
 ):
-    """获取指定问答会话详情。"""
-
-    session = orchestrator.get_session(session_id)
+    session = orchestrator.get_session(session_id, principal)
     if session is None:
-        from app.core.exceptions import ValidationError
-
-        raise ValidationError(f"会话不存在: {session_id}")
-
+        raise NotFoundError("会话不存在")
     return session
 
 
@@ -124,8 +139,8 @@ async def get_session(
 async def delete_session(
     session_id: str,
     orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
+    principal: Principal = Depends(get_current_principal),
 ):
-    """删除问答会话。"""
-
-    success = orchestrator.delete_session(session_id)
-    return {"deleted": success, "session_id": session_id}
+    if not orchestrator.delete_session(session_id, principal):
+        raise NotFoundError("会话不存在")
+    return {"deleted": True, "session_id": session_id}

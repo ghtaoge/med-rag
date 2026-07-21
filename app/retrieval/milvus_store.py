@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
-
 from app.core.config import get_config
 from app.core.exceptions import RetrievalError
 from app.core.models import DocumentChunk, SearchResult, ChunkMetadata
@@ -64,13 +62,8 @@ class MilvusStore:
 
         self._connect()
         if self._client.has_collection(self.collection_name):
-            if self._collection_has_string_primary_key():
+            if self._collection_is_compatible():
                 return
-            if self.get_chunk_count() > 0:
-                raise RetrievalError(
-                    f"Milvus collection {self.collection_name} schema is incompatible. "
-                    "Please migrate or recreate it before syncing documents."
-                )
             self._client.drop_collection(self.collection_name)
 
         try:
@@ -78,9 +71,11 @@ class MilvusStore:
 
             varchar_type = DataType.VARCHAR
             vector_type = DataType.FLOAT_VECTOR
+            int64_type = DataType.INT64
         except Exception:
             varchar_type = "VARCHAR"
             vector_type = "FLOAT_VECTOR"
+            int64_type = "INT64"
 
         schema = self._client.create_schema(auto_id=False, enable_dynamic_field=False)
         schema.add_field(field_name="id", datatype=varchar_type, is_primary=True, max_length=256)
@@ -88,6 +83,11 @@ class MilvusStore:
         schema.add_field(field_name="source", datatype=varchar_type, max_length=512)
         schema.add_field(field_name="content", datatype=varchar_type, max_length=8192)
         schema.add_field(field_name="metadata_json", datatype=varchar_type, max_length=4096)
+        schema.add_field(field_name="document_id", datatype=varchar_type, max_length=36)
+        schema.add_field(field_name="document_version_id", datatype=varchar_type, max_length=36)
+        schema.add_field(field_name="review_status", datatype=varchar_type, max_length=32)
+        schema.add_field(field_name="acl_departments", datatype=varchar_type, max_length=4096)
+        schema.add_field(field_name="expires_at_epoch", datatype=int64_type)
 
         index_params = self._client.prepare_index_params()
         index_params.add_index(
@@ -105,8 +105,8 @@ class MilvusStore:
             schema=schema,
             index_params=index_params,
         )
-    def _collection_has_string_primary_key(self) -> bool:
-        """Return True when the existing collection accepts string chunk ids."""
+    def _collection_is_compatible(self) -> bool:
+        """Return True when the collection contains the complete ACL schema."""
 
         try:
             from pymilvus import DataType
@@ -116,7 +116,25 @@ class MilvusStore:
             varchar_type = "VARCHAR"
 
         description = self._client.describe_collection(self.collection_name)
-        for field in description.get("fields", []):
+        fields = description.get("fields", [])
+        field_names = {
+            field.get("name") or field.get("field_name") for field in fields
+        }
+        required = {
+            "id",
+            "vector",
+            "source",
+            "content",
+            "metadata_json",
+            "document_id",
+            "document_version_id",
+            "review_status",
+            "acl_departments",
+            "expires_at_epoch",
+        }
+        if not required.issubset(field_names):
+            return False
+        for field in fields:
             name = field.get("name") or field.get("field_name")
             if name != "id":
                 continue
@@ -170,6 +188,12 @@ class MilvusStore:
                     "page_num": chunk.metadata.page_num,
                     "section": chunk.metadata.section,
                     "doc_type": chunk.metadata.doc_type,
+                    "document_id": chunk.metadata.document_id,
+                    "document_version_id": chunk.metadata.document_version_id,
+                    "owner_department_id": chunk.metadata.owner_department_id,
+                    "visible_department_ids": chunk.metadata.visible_department_ids,
+                    "review_status": chunk.metadata.review_status,
+                    "expires_at_epoch": chunk.metadata.expires_at_epoch,
                 },
                 ensure_ascii=False,
             )
@@ -180,6 +204,11 @@ class MilvusStore:
                     "source": chunk.source,
                     "content": chunk.content,
                     "metadata_json": metadata_json,
+                    "document_id": chunk.metadata.document_id,
+                    "document_version_id": chunk.metadata.document_version_id,
+                    "review_status": chunk.metadata.review_status,
+                    "acl_departments": "|" + "|".join(chunk.metadata.visible_department_ids) + "|",
+                    "expires_at_epoch": chunk.metadata.expires_at_epoch,
                 }
             )
 
@@ -196,7 +225,16 @@ class MilvusStore:
             "collection_name": self.collection_name,
             "data": [query_embedding],
             "limit": top_k,
-            "output_fields": ["source", "content", "metadata_json"],
+            "output_fields": [
+                "source",
+                "content",
+                "metadata_json",
+                "document_id",
+                "document_version_id",
+                "review_status",
+                "acl_departments",
+                "expires_at_epoch",
+            ],
         }
         if filter_expr:
             search_params["filter"] = filter_expr

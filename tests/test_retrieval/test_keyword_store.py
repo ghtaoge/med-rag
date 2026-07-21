@@ -1,10 +1,13 @@
 """BM25 关键词检索测试。"""
 
 import tempfile
-from pathlib import Path
 
 from app.core.models import DocumentChunk, ChunkMetadata
 from app.retrieval.keyword_store import KeywordStore
+from app.retrieval.access import RetrievalAccess
+
+DEPARTMENT_ID = "4b413c1d-625e-4ef5-956d-95900f7e4674"
+ACCESS = RetrievalAccess("user-1", (DEPARTMENT_ID,))
 
 
 def test_keyword_store_add_and_search():
@@ -18,19 +21,27 @@ def test_keyword_store_add_and_search():
                 id="test:1",
                 source="test.md",
                 content="阿司匹林的适应症包括降低心肌梗死风险",
-                metadata=ChunkMetadata(source="test.md"),
+                metadata=ChunkMetadata(
+                    source="test.md",
+                    visible_department_ids=(DEPARTMENT_ID,),
+                    review_status="approved",
+                ),
             ),
             DocumentChunk(
                 id="test:2",
                 source="test.md",
                 content="布洛芬用于缓解轻至中度疼痛",
-                metadata=ChunkMetadata(source="test.md"),
+                metadata=ChunkMetadata(
+                    source="test.md",
+                    visible_department_ids=(DEPARTMENT_ID,),
+                    review_status="approved",
+                ),
             ),
         ]
 
         store.add_chunks(chunks)
 
-        results = store.search("阿司匹林适应症", top_k=5)
+        results = store.search("阿司匹林适应症", top_k=5, access=ACCESS)
         assert len(results) >= 1
         # 阿司匹林相关 chunk 应排名靠前
         assert results[0].chunk.id == "test:1"

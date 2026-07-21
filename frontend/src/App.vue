@@ -1,5 +1,7 @@
 <template>
+  <router-view v-if="route.meta.public" />
   <div
+    v-else
     class="app-frame"
     :class="{ 'sidebar-collapsed': isSidebarCollapsed, 'sidebar-resizing': isSidebarResizing }"
     :data-theme="theme"
@@ -72,6 +74,11 @@
             <Sun v-else :size="17" />
           </button>
 
+          <span class="account-name">{{ auth.user?.username }}</span>
+          <button class="tool-icon" type="button" aria-label="退出登录" title="退出登录" @click="handleLogout">
+            <LogOut :size="17" />
+          </button>
+
         </div>
       </header>
       <router-view />
@@ -86,6 +93,7 @@ import {
   BarChart3,
   Clock3,
   Files,
+  LogOut,
   MessageSquareText,
   Moon,
   PanelLeftClose,
@@ -93,9 +101,11 @@ import {
   Settings,
   Sun,
 } from 'lucide-vue-next'
+import { useAuthStore } from './stores/auth'
 
 const router = useRouter()
 const route = useRoute()
+const auth = useAuthStore()
 const theme = ref('dark')
 const themeKey = 'med-rag-theme'
 const themeTouchedKey = 'med-rag-theme-touched'
@@ -109,13 +119,14 @@ const minSidebarWidth = 220
 const maxSidebarWidth = 420
 const collapsedSidebarWidth = 72
 
-const navItems = [
-  { path: '/chat', label: '智能问答', icon: MessageSquareText },
-  { path: '/documents', label: '文档管理', icon: Files },
-  { path: '/history', label: '历史记录', icon: Clock3 },
-  { path: '/evaluation', label: '效果评估', icon: BarChart3 },
-  { path: '/settings', label: '系统设置', icon: Settings },
+const allNavItems = [
+  { path: '/chat', label: '智能问答', icon: MessageSquareText, permission: 'chat' },
+  { path: '/documents', label: '文档管理', icon: Files, permission: 'document_read' },
+  { path: '/history', label: '历史记录', icon: Clock3, permission: 'chat' },
+  { path: '/evaluation', label: '效果评估', icon: BarChart3, permission: 'platform_config' },
+  { path: '/settings', label: '系统设置', icon: Settings, permission: 'platform_config' },
 ]
+const navItems = computed(() => allNavItems.filter(item => auth.hasPermission(item.permission)))
 
 const activeRoute = computed(() => route.path)
 const frameStyle = computed(() => ({
@@ -158,6 +169,11 @@ function toggleTheme() {
 
 function go(path) {
   if (route.path !== path) router.push(path)
+}
+
+async function handleLogout() {
+  await auth.logout()
+  await router.replace('/login')
 }
 
 function clampSidebarWidth(value) {
@@ -255,6 +271,15 @@ function startSidebarResize(event) {
 .sidebar-toggle:hover {
   color: var(--text-primary);
   background: var(--bg-tertiary);
+}
+
+.account-name {
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .brand-mark {

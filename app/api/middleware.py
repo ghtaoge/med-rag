@@ -74,6 +74,7 @@ class RateLimitMiddleware:
         "/api/v1/chat/stream": (30, 60),    # 流式问答：30次/分钟
         "/api/v1/chat/complete": (20, 60),   # 完整问答：20次/分钟
         "/api/v1/documents/upload": (10, 60), # 文件上传：10次/分钟
+        "/api/v1/auth/login": (10, 60),
     }
 
     # 默认限速
@@ -162,6 +163,7 @@ async def med_rag_exception_handler(request: Request, exc: MedRagError) -> JSONR
     # 映射异常 code → HTTP status code
     status_map = {
         "VALIDATION_ERROR": 400,
+        "NOT_FOUND": 404,
         "RETRIEVAL_ERROR": 503,
         "GENERATION_ERROR": 503,
         "DOCUMENT_ERROR": 400,
@@ -170,6 +172,10 @@ async def med_rag_exception_handler(request: Request, exc: MedRagError) -> JSONR
         "CONFIGURATION_ERROR": 500,
         "FILE_SECURITY_REJECTED": 400,
         "SECURITY_ERROR": 403,
+        "AUTHENTICATION_ERROR": 401,
+        "AUTHORIZATION_ERROR": 403,
+        "PASSWORD_CHANGE_REQUIRED": 403,
+        "AUTHORIZATION_SERVICE_UNAVAILABLE": 503,
     }
 
     status_code = status_map.get(exc.code, 500)

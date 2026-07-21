@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from app.security.bootstrap_auth import verify_bootstrap_admin
+from app.security.permissions import Permission, permission_dependency
 
 from app.core.dependencies import (
     get_config_dep,
@@ -16,7 +16,7 @@ from app.core.dependencies import (
 router = APIRouter(
     prefix="/api/v1/evaluation",
     tags=["评估"],
-    dependencies=[Depends(verify_bootstrap_admin)],
+    dependencies=[Depends(permission_dependency(Permission.PLATFORM_CONFIG))],
 )
 
 

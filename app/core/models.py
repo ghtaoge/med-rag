@@ -50,6 +50,12 @@ class ChunkMetadata:
     page_num: int = 0
     section: str = ""
     doc_type: str = ""
+    document_id: str = ""
+    document_version_id: str = ""
+    owner_department_id: str = ""
+    visible_department_ids: tuple[str, ...] = field(default_factory=tuple)
+    review_status: str = "draft"
+    expires_at_epoch: int = 0
 
 
 @dataclass
@@ -102,4 +108,6 @@ class QaSession:
     intent: IntentResult | None = None
     correctness: CorrectnessResult | None = None
     source_type: str = "knowledge_base"  # "knowledge_base" | "llm_fallback" | "no_result"
+    user_id: str = ""
+    department_ids: tuple[str, ...] = field(default_factory=tuple)
     created_at: datetime = field(default_factory=datetime.now)

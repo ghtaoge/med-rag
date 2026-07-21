@@ -14,6 +14,9 @@ RUN pip install --no-cache-dir -e .
 
 # 复制应用代码
 COPY app/ app/
+COPY migrations/ migrations/
+COPY alembic.ini .
+COPY scripts/ scripts/
 COPY config.yaml .
 COPY data/ data/
 
@@ -50,6 +53,9 @@ RUN pip install --no-cache-dir -e .
 
 # 应用代码
 COPY app/ app/
+COPY migrations/ migrations/
+COPY alembic.ini .
+COPY scripts/ scripts/
 COPY config.yaml .
 COPY data/ data/
 

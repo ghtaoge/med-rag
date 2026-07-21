@@ -1,52 +1,87 @@
 import { defineStore } from 'pinia'
-import { listDocuments, uploadDocument, syncAllDocuments, deleteDocument } from '../services/api'
+
+import {
+  approveDocument,
+  listDocuments,
+  reauthenticate,
+  revokeDocument,
+  submitDocument,
+  syncDocument,
+  uploadDocument,
+} from '../services/api'
 
 export const useDocumentStore = defineStore('document', {
   state: () => ({
     documents: [],
-    totalFiles: 0,
-    totalChunks: 0,
     uploading: false,
-    syncing: false,
+    workingDocumentId: '',
   }),
+
+  getters: {
+    totalFiles: state => state.documents.length,
+    totalChunks: () => 0,
+  },
 
   actions: {
     async loadDocuments() {
       try {
-        const res = await listDocuments()
-        this.documents = res.data.documents || []
-        this.totalFiles = res.data.total_files || 0
-        this.totalChunks = res.data.total_chunks || 0
-      } catch (e) {
+        const response = await listDocuments()
+        this.documents = response.data.documents || []
+      } catch {
         this.documents = []
       }
     },
 
-    async upload(file) {
+    async upload(file, ownerDepartmentId, visibility, visibleDepartmentIds) {
       this.uploading = true
       try {
-        const res = await uploadDocument(file)
+        const response = await uploadDocument(
+          file,
+          ownerDepartmentId,
+          visibility,
+          visibleDepartmentIds,
+        )
         await this.loadDocuments()
-        return res.data
+        return response.data
       } finally {
         this.uploading = false
       }
     },
 
-    async syncAll() {
-      this.syncing = true
-      try {
-        const res = await syncAllDocuments()
-        await this.loadDocuments()
-        return res.data
-      } finally {
-        this.syncing = false
-      }
+    async submit(documentId, reason) {
+      return this._run(documentId, async () => {
+        await submitDocument(documentId, reason)
+      })
     },
 
-    async remove(filename) {
-      await deleteDocument(filename)
-      await this.loadDocuments()
+    async approve(documentId, reason, password) {
+      return this._run(documentId, async () => {
+        const auth = await reauthenticate(password)
+        await approveDocument(documentId, reason, auth.data.reauthentication_token)
+      })
+    },
+
+    async revoke(documentId, reason, password) {
+      return this._run(documentId, async () => {
+        const auth = await reauthenticate(password)
+        await revokeDocument(documentId, reason, auth.data.reauthentication_token)
+      })
+    },
+
+    async sync(documentId) {
+      return this._run(documentId, async () => {
+        await syncDocument(documentId)
+      })
+    },
+
+    async _run(documentId, operation) {
+      this.workingDocumentId = documentId
+      try {
+        await operation()
+        await this.loadDocuments()
+      } finally {
+        this.workingDocumentId = ''
+      }
     },
   },
 })

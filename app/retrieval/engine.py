@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.core.models import SearchResult, IntentCategory
+from app.retrieval.access import RetrievalAccess
 
 
 class RetrievalEngine(ABC):
@@ -18,6 +19,7 @@ class RetrievalEngine(ABC):
         top_k: int = 5,
         intent: IntentCategory | None = None,
         metadata_filter: dict | None = None,
+        access: RetrievalAccess | None = None,
     ) -> list[SearchResult]:
         """检索最相关的知识片段。"""
 

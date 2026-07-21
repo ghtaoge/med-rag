@@ -1,7 +1,7 @@
 """LLM 兜底逻辑测试。"""
 
 from app.api.chat import ChatOrchestrator
-from app.core.models import DocumentChunk, SearchResult, ChunkMetadata
+from app.core.models import DocumentChunk, SearchResult
 
 
 def _make_result(score: float) -> SearchResult:

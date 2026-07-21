@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from app.core.models import SearchResult, IntentCategory
+from app.core.models import IntentCategory
 from app.retrieval.hybrid_engine import HybridRetrievalEngine
+from app.retrieval.access import RetrievalAccess
 
 
 @dataclass
@@ -41,11 +42,12 @@ class RelevanceEvaluator:
         question: str,
         top_k: int = 5,
         intent: IntentCategory | None = None,
+        access: RetrievalAccess | None = None,
     ) -> RelevanceMetrics:
         """评估单条查询的相关性。"""
 
         results = self.retrieval_engine.search(
-            question=question, top_k=top_k, intent=intent
+            question=question, top_k=top_k, intent=intent, access=access
         )
 
         scores = [r.score for r in results]
@@ -70,12 +72,13 @@ class RelevanceEvaluator:
         self,
         queries: list[str],
         top_k: int = 5,
+        access: RetrievalAccess | None = None,
     ) -> list[RelevanceMetrics]:
         """批量评估相关性。"""
 
         results = []
         for query in queries:
-            metrics = self.evaluate_single(query, top_k)
+            metrics = self.evaluate_single(query, top_k, access=access)
             results.append(metrics)
 
         return results

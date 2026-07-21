@@ -22,6 +22,13 @@ class ValidationError(MedRagError):
         super().__init__(message, code="VALIDATION_ERROR")
 
 
+class NotFoundError(MedRagError):
+    """Requested resource does not exist or is not visible to the caller."""
+
+    def __init__(self, message: str = "资源不存在"):
+        super().__init__(message, code="NOT_FOUND")
+
+
 class RetrievalError(MedRagError):
     """检索引擎异常。"""
 
@@ -76,3 +83,34 @@ class FileSecurityError(SecurityError):
 
     def __init__(self, message: str = "文件未通过安全检查"):
         super().__init__(message, code="FILE_SECURITY_REJECTED")
+
+
+class AuthenticationError(SecurityError):
+    """身份凭据无效。"""
+
+    def __init__(self, message: str = "用户名或密码错误"):
+        super().__init__(message, code="AUTHENTICATION_ERROR")
+
+
+class AuthorizationError(SecurityError):
+    """当前身份无权执行操作。"""
+
+    def __init__(self, message: str = "无权执行此操作"):
+        super().__init__(message, code="AUTHORIZATION_ERROR")
+
+
+class AuthorizationServiceUnavailable(SecurityError):
+    """授权数据源不可用。"""
+
+    def __init__(self):
+        super().__init__(
+            "授权服务暂不可用",
+            code="AUTHORIZATION_SERVICE_UNAVAILABLE",
+        )
+
+
+class PasswordChangeRequired(SecurityError):
+    """临时密码必须先更新。"""
+
+    def __init__(self):
+        super().__init__("首次登录必须修改密码", code="PASSWORD_CHANGE_REQUIRED")

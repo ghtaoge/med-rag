@@ -6,12 +6,18 @@
 from __future__ import annotations
 
 from app.core.models import SearchResult, IntentCategory
-from app.retrieval.engine import RetrievalEngine, RetrievalStrategy, get_strategy
+from app.retrieval.engine import RetrievalEngine, get_strategy
 from app.retrieval.milvus_store import MilvusStore
 from app.retrieval.keyword_store import KeywordStore
 from app.retrieval.hybrid import rrf_fusion
 from app.retrieval.reranker import Reranker
 from app.retrieval.metadata_filter import build_filter
+from app.retrieval.access import (
+    RetrievalAccess,
+    assert_authorized_results,
+    build_milvus_access_filter,
+)
+from app.core.exceptions import AuthorizationError
 
 
 class HybridRetrievalEngine(RetrievalEngine):
@@ -36,11 +42,18 @@ class HybridRetrievalEngine(RetrievalEngine):
         top_k: int = 5,
         intent: IntentCategory | None = None,
         metadata_filter: dict | None = None,
+        access: RetrievalAccess | None = None,
     ) -> list[SearchResult]:
         """混合检索完整流程。"""
 
         strategy = get_strategy(intent)
-        filter_expr = build_filter(metadata_filter)
+        if access is None:
+            raise AuthorizationError("检索必须提供授权范围")
+        metadata_expr = build_filter(metadata_filter)
+        access_expr = build_milvus_access_filter(access)
+        filter_expr = (
+            f"({access_expr}) && ({metadata_expr})" if metadata_expr else access_expr
+        )
 
         # 多路召回
         vector_results: list[SearchResult] = []
@@ -62,6 +75,7 @@ class HybridRetrievalEngine(RetrievalEngine):
                 keyword_results = self.keyword_store.search(
                     query=question,
                     top_k=strategy.keyword_top_k,
+                    access=access,
                 )
             except Exception:
                 keyword_results = []
@@ -83,4 +97,4 @@ class HybridRetrievalEngine(RetrievalEngine):
         else:
             final = fused[:top_k]
 
-        return final
+        return assert_authorized_results(final, access)

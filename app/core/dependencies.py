@@ -10,6 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import redis
+from fastapi import Depends
 
 from app.core.config import get_config
 from app.core.logging import get_logger
@@ -30,6 +31,10 @@ from app.documents.sync import DocumentSync
 from app.documents.validator import DocumentValidator
 
 from app.api.chat import ChatOrchestrator
+from app.security.auth_service import AuthService
+from app.security.database import build_engine, build_session_factory
+from app.security.identity_provider import LocalIdentityProvider
+from app.security.repository import SecurityRepository
 
 logger = get_logger(__name__)
 
@@ -40,6 +45,31 @@ def get_config_dep() -> dict:
 
     return get_config()
 
+
+@lru_cache
+def get_security_session_factory():
+    """获取关系数据库 Session 工厂。"""
+
+    cfg = get_config()
+    engine = build_engine(cfg["database"]["url"])
+    return build_session_factory(engine)
+
+
+def get_db_session():
+    """提供请求级数据库事务边界。"""
+
+    factory = get_security_session_factory()
+    with factory() as session:
+        yield session
+
+
+def get_auth_service(
+    session=Depends(get_db_session),
+    config: dict = Depends(get_config_dep),
+) -> AuthService:
+    repository = SecurityRepository(session)
+    provider = LocalIdentityProvider(repository)
+    return AuthService(session, repository, provider, config)
 
 @lru_cache
 def get_redis_client() -> redis.Redis | None:

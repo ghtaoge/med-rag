@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 import jieba
 from pathlib import Path
 from whoosh.index import create_in, open_dir, exists_in
-from whoosh.fields import Schema, TEXT, ID
+from whoosh.fields import Schema, TEXT, ID, KEYWORD, NUMERIC
 from whoosh.qparser import QueryParser, OrGroup
 from whoosh.analysis import Analyzer
+from whoosh.query import And, NumericRange, Or, Term
 
 from app.core.config import get_config
-from app.core.exceptions import RetrievalError
 from app.core.models import DocumentChunk, SearchResult
+from app.core.models import ChunkMetadata
+from app.retrieval.access import RetrievalAccess
 
 config = get_config()
 
@@ -62,6 +66,12 @@ class KeywordStore:
             chunk_id=ID(stored=True, unique=True),
             source=ID(stored=True),
             content=TEXT(analyzer=ChineseAnalyzer(), stored=True),
+            metadata_json=TEXT(stored=True),
+            document_id=ID(stored=True),
+            document_version_id=ID(stored=True),
+            review_status=ID(stored=True),
+            department_ids=KEYWORD(stored=True, commas=True, lowercase=True),
+            expires_at_epoch=NUMERIC(stored=True),
         )
 
         self._ix = None
@@ -73,7 +83,15 @@ class KeywordStore:
             return self._ix
 
         if exists_in(str(self.index_dir)):
-            self._ix = open_dir(str(self.index_dir))
+            existing = open_dir(str(self.index_dir))
+            if set(existing.schema.names()) != set(self.schema.names()):
+                existing.close()
+                for path in self.index_dir.iterdir():
+                    if path.is_file():
+                        path.unlink()
+                self._ix = create_in(str(self.index_dir), self.schema)
+            else:
+                self._ix = existing
         else:
             self._ix = create_in(str(self.index_dir), self.schema)
         return self._ix
@@ -88,6 +106,30 @@ class KeywordStore:
                 chunk_id=chunk.id,
                 source=chunk.source,
                 content=chunk.content,
+                metadata_json=json.dumps(
+                    {
+                        "source": chunk.metadata.source,
+                        "chunk_type": chunk.metadata.chunk_type.value
+                        if hasattr(chunk.metadata.chunk_type, "value")
+                        else chunk.metadata.chunk_type,
+                        "heading": chunk.metadata.heading,
+                        "page_num": chunk.metadata.page_num,
+                        "section": chunk.metadata.section,
+                        "doc_type": chunk.metadata.doc_type,
+                        "document_id": chunk.metadata.document_id,
+                        "document_version_id": chunk.metadata.document_version_id,
+                        "owner_department_id": chunk.metadata.owner_department_id,
+                        "visible_department_ids": chunk.metadata.visible_department_ids,
+                        "review_status": chunk.metadata.review_status,
+                        "expires_at_epoch": chunk.metadata.expires_at_epoch,
+                    },
+                    ensure_ascii=False,
+                ),
+                document_id=chunk.metadata.document_id,
+                document_version_id=chunk.metadata.document_version_id,
+                review_status=chunk.metadata.review_status,
+                department_ids=",".join(chunk.metadata.visible_department_ids),
+                expires_at_epoch=chunk.metadata.expires_at_epoch,
             )
         writer.commit()
 
@@ -99,7 +141,12 @@ class KeywordStore:
         writer.delete_by_term("source", source)
         writer.commit()
 
-    def search(self, query: str, top_k: int = 20) -> list[SearchResult]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 20,
+        access: RetrievalAccess | None = None,
+    ) -> list[SearchResult]:
         """BM25 关键词检索。"""
 
         ix = self._get_index()
@@ -107,16 +154,42 @@ class KeywordStore:
 
         # 构建查询：对每个分词构建 OR 组合查询
         parser = QueryParser("content", ix.schema, group=OrGroup)
-        q = parser.parse(query)
+        if access is None:
+            from app.core.exceptions import AuthorizationError
+
+            raise AuthorizationError("检索必须提供授权范围")
+        department_query = Or(
+            [Term("department_ids", value) for value in access.validated_department_ids()]
+        )
+        now = int(datetime.now(timezone.utc).timestamp())
+        expiry_query = Or(
+            [
+                NumericRange("expires_at_epoch", 0, 0),
+                NumericRange("expires_at_epoch", now + 1, None),
+            ]
+        )
+        q = And(
+            [
+                parser.parse(query),
+                Term("review_status", "approved"),
+                department_query,
+                expiry_query,
+            ]
+        )
 
         results = searcher.search(q, limit=top_k)
 
         search_results = []
         for hit in results:
+            raw_metadata = json.loads(hit["metadata_json"])
+            raw_metadata["visible_department_ids"] = tuple(
+                raw_metadata.get("visible_department_ids", ())
+            )
             chunk = DocumentChunk(
                 id=hit["chunk_id"],
                 source=hit["source"],
                 content=hit["content"],
+                metadata=ChunkMetadata(**raw_metadata),
             )
             # Whoosh 的 score 是 BM25 分数，需要归一化
             score = hit.score / (1.0 + hit.score)  # 归一化到 0-1

@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from app.core.models import IntentCategory, SearchResult
-from app.evaluation.recall_evaluator import RecallEvaluator, RecallMetrics
-from app.evaluation.relevance_evaluator import RelevanceEvaluator, RelevanceMetrics
-from app.evaluation.correctness_check import CorrectnessChecker, CorrectnessResult
+from app.evaluation.recall_evaluator import RecallEvaluator
+from app.evaluation.relevance_evaluator import RelevanceEvaluator
+from app.evaluation.correctness_check import CorrectnessChecker
+from app.retrieval.access import RetrievalAccess
 
 
 @dataclass
@@ -64,6 +64,7 @@ class EvaluationReportGenerator:
         eval_set: list[tuple[str, list[str]]],
         eval_set_name: str = "default",
         top_k: int = 5,
+        access: RetrievalAccess | None = None,
     ) -> EvaluationReport:
         """生成完整评估报告。
 
@@ -76,19 +77,21 @@ class EvaluationReportGenerator:
         eval_set_size = len(eval_set)
 
         # 1. 召回评估
-        recall_metrics = self.recall_evaluator.evaluate_batch(eval_set, top_k)
+        recall_metrics = self.recall_evaluator.evaluate_batch(eval_set, top_k, access)
         recall_summary = self.recall_evaluator.summarize(recall_metrics)
 
         # 2. 相关性评估
         queries = [q for q, _ in eval_set]
-        relevance_metrics = self.relevance_evaluator.evaluate_batch(queries, top_k)
+        relevance_metrics = self.relevance_evaluator.evaluate_batch(
+            queries, top_k, access
+        )
         relevance_summary = self.relevance_evaluator.summarize(relevance_metrics)
 
         # 3. 正确性评估（使用检索结果模拟）
         correctness_summaries = []
         for i, (question, relevant_sources) in enumerate(eval_set):
             results = self.recall_evaluator.retrieval_engine.search(
-                question=question, top_k=top_k
+                question=question, top_k=top_k, access=access
             )
             # 模拟回答 — 使用检索片段内容
             simulated_answer = " ".join(r.chunk.content[:100] for r in results[:3])
@@ -151,7 +154,6 @@ class EvaluationReportGenerator:
         """根据评估指标生成上线建议。"""
 
         avg_recall = recall_summary.get("avg_recall", 0)
-        avg_precision = recall_summary.get("avg_precision", 0)
         avg_f1 = recall_summary.get("avg_f1", 0)
         avg_hit_rate = recall_summary.get("avg_hit_rate", 0)
         avg_relevance = relevance_summary.get("avg_relevance", 0)

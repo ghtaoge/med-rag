@@ -5,6 +5,7 @@ app:
   version: "1.0.0"
   host: "0.0.0.0"
   port: 8000
+  environment: "development"
 
 milvus:
   host: localhost
@@ -58,7 +59,6 @@ llm:
     model: "glm-4-plus"
 
 security:
-  bootstrap_admin_key: ""
   max_upload_bytes: 52428800
   max_archive_ratio: 100
   max_archive_uncompressed_bytes: 524288000
@@ -67,6 +67,16 @@ security:
 cors:
   allowed_origins:
     - "http://localhost:3000"
+
+database:
+  url: "sqlite:///./data/med_rag.db"
+
+auth:
+  jwt_secret: ""
+  access_ttl_seconds: 900
+  refresh_ttl_seconds: 604800
+  issuer: "med-rag"
+  secure_cookies: true
 
 knowledge_dir: data
 whoosh_dir: whoosh_index

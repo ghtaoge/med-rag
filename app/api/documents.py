@@ -3,28 +3,202 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import uuid
+from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app.core.dependencies import (
     get_config_dep,
     get_document_sync,
     get_document_validator,
+    get_db_session,
 )
-from app.core.exceptions import DocumentError, FileSecurityError, ValidationError
+from app.core.exceptions import (
+    DocumentError,
+    FileSecurityError,
+    MedRagError,
+    NotFoundError,
+    ValidationError,
+)
+from app.core.models import ChunkMetadata
+from app.documents.models import DocumentVisibility, KnowledgeDocumentVersion, ReviewStatus
+from app.documents.repository import DocumentRepository
+from app.documents.service import DocumentWorkflowService
 from app.documents.file_safety import inspect_file, resolve_child, validate_client_filename
 from app.documents.sync import DocumentSync
 from app.documents.validator import DocumentValidator
 from app.documents.index_state import load_index_state, remove_index_state
-from app.security.bootstrap_auth import verify_bootstrap_admin
-
-router = APIRouter(
-    prefix="/api/v1/documents",
-    tags=["文档管理"],
-    dependencies=[Depends(verify_bootstrap_admin)],
+from app.security.permissions import Permission, ensure_permission, permission_dependency
+from app.security.principal import (
+    Principal,
+    get_current_principal,
+    get_reauthenticated_principal,
 )
+
+router = APIRouter(prefix="/api/v1/documents", tags=["文档管理"])
+
+
+class ReviewRequest(BaseModel):
+    reason: str
+
+
+def _request_id(request: Request) -> str:
+    return request.headers.get("X-Request-ID", uuid.uuid4().hex)
+
+
+def _version_payload(document, version, visible_department_ids: tuple[str, ...]) -> dict:
+    return {
+        "document_id": document.id,
+        "version_id": version.id,
+        "version_number": version.version_number,
+        "display_name": version.display_name,
+        "owner_department_id": document.owner_department_id,
+        "visibility": document.visibility.value,
+        "visible_department_ids": visible_department_ids,
+        "status": version.status.value,
+        "created_by": version.created_by,
+        "last_edited_by": version.last_edited_by,
+        "reviewed_by": version.reviewed_by,
+        "size": version.size,
+        "extension": version.extension,
+        "created_at": version.created_at,
+        "published_at": version.published_at,
+        "expires_at": version.expires_at,
+    }
+
+
+def _parse_visible_departments(raw: str) -> tuple[str, ...]:
+    if not raw.strip():
+        return ()
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        value = [item.strip() for item in raw.split(",") if item.strip()]
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValidationError("visible_department_ids 必须是部门 ID 数组")
+    return tuple(dict.fromkeys(value))
+
+
+def _managed_file_path(knowledge_dir: Path, storage_key: str) -> Path:
+    root = knowledge_dir.resolve()
+    path = (root / storage_key).resolve()
+    if root not in path.parents:
+        raise DocumentError("文档存储路径越界")
+    return path
+
+
+def _index_approved_version(
+    sync: DocumentSync,
+    config: dict,
+    repository: DocumentRepository,
+    document,
+    version: KnowledgeDocumentVersion,
+) -> int:
+    visible_departments = repository.visible_department_ids(document.id)
+    expires_at_epoch = int(version.expires_at.timestamp()) if version.expires_at else 0
+    return sync.sync_managed_version(
+        _managed_file_path(Path(config["knowledge_dir"]), version.storage_key),
+        version.storage_key,
+        ChunkMetadata(
+            source=version.storage_key,
+            document_id=document.id,
+            document_version_id=version.id,
+            owner_department_id=document.owner_department_id,
+            visible_department_ids=visible_departments,
+            review_status=ReviewStatus.APPROVED.value,
+            expires_at_epoch=expires_at_epoch,
+        ),
+    )
+
+
+@router.post("", status_code=201)
+async def create_document(
+    request: Request,
+    file: UploadFile = File(..., description="上传文件"),
+    owner_department_id: str = Form(...),
+    visibility: DocumentVisibility = Form(DocumentVisibility.DEPARTMENT_ONLY),
+    visible_department_ids: str = Form(""),
+    expires_at: datetime | None = Form(None),
+    principal: Principal = Depends(get_current_principal),
+    session: Session = Depends(get_db_session),
+    config: dict = Depends(get_config_dep),
+    validator: DocumentValidator = Depends(get_document_validator),
+):
+    """Store an inspected document version as a non-indexed draft."""
+
+    document_id = str(uuid.uuid4())
+    version_id = str(uuid.uuid4())
+    filename = validate_client_filename(file.filename)
+    suffix = Path(filename).suffix.lower()
+    storage_key = f"{document_id}/{version_id}{suffix}"
+    directory = Path(config["knowledge_dir"]) / document_id
+    try:
+        _, stored_path = await _save_bounded_upload(
+            file,
+            directory,
+            config.get("security", {}).get("max_upload_bytes", 50 * 1024 * 1024),
+            destination_name=f"{version_id}{suffix}",
+        )
+        validation = validator.validate(stored_path)
+        if not validation.is_valid:
+            stored_path.unlink(missing_ok=True)
+            raise ValidationError("文档内容校验失败: " + "; ".join(validation.errors))
+        file_hash = hashlib.sha256(stored_path.read_bytes()).hexdigest()
+        workflow = DocumentWorkflowService(session)
+        document, version = workflow.create_draft(
+            principal=principal,
+            document_id=document_id,
+            version_id=version_id,
+            owner_department_id=owner_department_id,
+            visibility=visibility,
+            visible_department_ids=_parse_visible_departments(visible_department_ids),
+            display_name=filename,
+            storage_key=storage_key,
+            file_hash=file_hash,
+            extension=suffix,
+            size=stored_path.stat().st_size,
+            expires_at=expires_at,
+            request_id=_request_id(request),
+        )
+    except MedRagError:
+        _managed_file_path(Path(config["knowledge_dir"]), storage_key).unlink(
+            missing_ok=True
+        )
+        raise
+    except Exception as exc:
+        _managed_file_path(Path(config["knowledge_dir"]), storage_key).unlink(
+            missing_ok=True
+        )
+        raise DocumentError("创建文档草稿失败") from exc
+    repository = DocumentRepository(session)
+    return _version_payload(
+        document, version, repository.visible_department_ids(document.id)
+    )
+
+
+@router.get("")
+def list_managed_documents(
+    principal: Principal = Depends(get_current_principal),
+    session: Session = Depends(get_db_session),
+):
+    repository = DocumentRepository(session)
+    rows = repository.list_visible(principal.department_ids)
+    return {
+        "documents": [
+            _version_payload(
+                document,
+                version,
+                repository.visible_department_ids(document.id),
+            )
+            for document, version in rows
+        ]
+    }
 
 
 async def _save_bounded_upload(
@@ -59,14 +233,21 @@ async def _save_bounded_upload(
         temporary.unlink(missing_ok=True)
 
 
-@router.post("/upload")
+@router.post(
+    "/upload",
+    dependencies=[Depends(permission_dependency(Permission.PLATFORM_CONFIG))],
+)
 async def upload_document(
+    response: Response,
     file: UploadFile = File(..., description="上传文件"),
     config: dict = Depends(get_config_dep),
     validator: DocumentValidator = Depends(get_document_validator),
     sync: DocumentSync = Depends(get_document_sync),
 ):
     """上传文档 → 校验 → 保存 → 自动同步索引。"""
+
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
 
     knowledge_dir = Path(config["knowledge_dir"])
     filename = validate_client_filename(file.filename)
@@ -116,11 +297,18 @@ async def upload_document(
     }
 
 
-@router.post("/sync")
+@router.post(
+    "/sync",
+    dependencies=[Depends(permission_dependency(Permission.PLATFORM_CONFIG))],
+)
 async def sync_all_documents(
+    response: Response,
     sync: DocumentSync = Depends(get_document_sync),
 ):
     """全量同步所有变更文件。"""
+
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
 
     # 先把变更列表返回给前端展示，再执行实际同步。
     # sync_all 内部仍会按当前文件状态重新计算，保证返回的 chunk 数以最终索引为准。
@@ -139,12 +327,19 @@ async def sync_all_documents(
     }
 
 
-@router.post("/sync/{filename}")
+@router.post(
+    "/sync/{filename}",
+    dependencies=[Depends(permission_dependency(Permission.PLATFORM_CONFIG))],
+)
 async def sync_single_document(
     filename: str,
+    response: Response,
     sync: DocumentSync = Depends(get_document_sync),
 ):
     """同步单个文件。"""
+
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
 
     filename = validate_client_filename(filename)
     try:
@@ -158,13 +353,20 @@ async def sync_single_document(
     }
 
 
-@router.post("/validate")
+@router.post(
+    "/validate",
+    dependencies=[Depends(permission_dependency(Permission.PLATFORM_CONFIG))],
+)
 async def validate_document(
+    response: Response,
     file: UploadFile = File(..., description="待校验文件"),
     config: dict = Depends(get_config_dep),
     validator: DocumentValidator = Depends(get_document_validator),
 ):
     """校验文档（不入库，只检查）。"""
+
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
 
     knowledge_dir = Path(config["knowledge_dir"])
     filename = validate_client_filename(file.filename)
@@ -190,11 +392,18 @@ async def validate_document(
         resolve_child(knowledge_dir, temp_name).unlink(missing_ok=True)
 
 
-@router.get("/list")
+@router.get(
+    "/list",
+    dependencies=[Depends(permission_dependency(Permission.PLATFORM_CONFIG))],
+)
 async def list_documents(
+    response: Response,
     config: dict = Depends(get_config_dep),
 ):
     """列出知识库中的所有文档及其 chunk 状态。"""
+
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
 
     knowledge_dir = Path(config["knowledge_dir"])
 
@@ -227,12 +436,19 @@ async def list_documents(
     }
 
 
-@router.delete("/{filename}")
+@router.delete(
+    "/{filename}",
+    dependencies=[Depends(permission_dependency(Permission.PLATFORM_CONFIG))],
+)
 async def delete_document(
     filename: str,
+    response: Response,
     config: dict = Depends(get_config_dep),
 ):
     """从知识库删除文档（文件 + 索引）。"""
+
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "Wed, 31 Dec 2026 23:59:59 GMT"
 
     knowledge_dir = Path(config["knowledge_dir"])
     filename = validate_client_filename(filename)
@@ -249,4 +465,116 @@ async def delete_document(
     return {
         "deleted": True,
         "filename": filename,
+    }
+
+
+@router.get("/{document_id}")
+def get_managed_document(
+    document_id: str,
+    principal: Principal = Depends(get_current_principal),
+    session: Session = Depends(get_db_session),
+):
+    repository = DocumentRepository(session)
+    document = repository.get_document(document_id)
+    if document is None or not repository.is_visible(document, principal.department_ids):
+        raise NotFoundError("文档不存在")
+    version = repository.current_version(document_id)
+    if version is None:
+        raise NotFoundError("文档不存在")
+    return _version_payload(
+        document, version, repository.visible_department_ids(document.id)
+    )
+
+
+@router.post("/{document_id}/submit-review")
+def submit_document_review(
+    document_id: str,
+    payload: ReviewRequest,
+    request: Request,
+    principal: Principal = Depends(get_current_principal),
+    session: Session = Depends(get_db_session),
+):
+    version = DocumentWorkflowService(session).submit_review(
+        principal, document_id, payload.reason, _request_id(request)
+    )
+    document = DocumentRepository(session).get_document(document_id)
+    return _version_payload(
+        document,
+        version,
+        DocumentRepository(session).visible_department_ids(document_id),
+    )
+
+
+@router.post("/{document_id}/approve")
+def approve_document(
+    document_id: str,
+    payload: ReviewRequest,
+    request: Request,
+    principal: Principal = Depends(get_reauthenticated_principal),
+    session: Session = Depends(get_db_session),
+    config: dict = Depends(get_config_dep),
+    sync: DocumentSync = Depends(get_document_sync),
+):
+    workflow = DocumentWorkflowService(session)
+    version = workflow.approve(
+        principal, document_id, payload.reason, _request_id(request)
+    )
+    repository = DocumentRepository(session)
+    document = repository.get_document(document_id)
+    chunk_count = _index_approved_version(
+        sync, config, repository, document, version
+    )
+    response = _version_payload(
+        document, version, repository.visible_department_ids(document_id)
+    )
+    response["chunk_count"] = chunk_count
+    return response
+
+
+@router.post("/{document_id}/revoke")
+def revoke_document(
+    document_id: str,
+    payload: ReviewRequest,
+    request: Request,
+    principal: Principal = Depends(get_reauthenticated_principal),
+    session: Session = Depends(get_db_session),
+    sync: DocumentSync = Depends(get_document_sync),
+):
+    repository = DocumentRepository(session)
+    current = repository.current_version(document_id)
+    if current is None:
+        raise NotFoundError("文档不存在")
+    source = current.storage_key
+    version = DocumentWorkflowService(session).revoke(
+        principal, document_id, payload.reason, _request_id(request)
+    )
+    sync.remove_source(source)
+    document = repository.get_document(document_id)
+    return _version_payload(
+        document, version, repository.visible_department_ids(document_id)
+    )
+
+
+@router.post("/{document_id}/sync")
+def sync_managed_document(
+    document_id: str,
+    principal: Principal = Depends(get_current_principal),
+    session: Session = Depends(get_db_session),
+    config: dict = Depends(get_config_dep),
+    sync: DocumentSync = Depends(get_document_sync),
+):
+    repository = DocumentRepository(session)
+    document = repository.get_document(document_id)
+    if document is None or not repository.is_visible(document, principal.department_ids):
+        raise NotFoundError("文档不存在")
+    ensure_permission(principal, Permission.DOCUMENT_EDIT, document.owner_department_id)
+    version = repository.current_version(document_id)
+    if version is None or version.status != ReviewStatus.APPROVED:
+        raise ValidationError("只有已批准文档可以同步索引")
+    return {
+        "document_id": document_id,
+        "version_id": version.id,
+        "chunk_count": _index_approved_version(
+            sync, config, repository, document, version
+        ),
     }

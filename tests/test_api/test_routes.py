@@ -39,8 +39,14 @@ def test_chat_complete_endpoint_exists():
 def test_chat_stream_endpoint_exists():
     """流式问答端点可访问。"""
 
-    route = next(route for route in app.routes if route.path == "/api/v1/chat/stream")
-    assert {"GET", "POST"}.issubset(route.methods)
+    methods = set().union(
+        *(
+            route.methods
+            for route in app.routes
+            if route.path == "/api/v1/chat/stream"
+        )
+    )
+    assert {"GET", "POST"}.issubset(methods)
 
 
 def test_sessions_list_endpoint():
@@ -65,6 +71,15 @@ def test_sessions_persist_without_redis(tmp_path):
         IntentCategory,
         IntentResult,
         QaSession,
+    )
+    from app.security.models import Role
+    from app.security.principal import Principal, PrincipalMembership
+
+    principal = Principal(
+        user_id="test-user",
+        username="test-user",
+        memberships=(PrincipalMembership("test-department", Role.READER),),
+        session_id="test-session",
     )
 
     store_path = tmp_path / ".med-rag-sessions.json"
@@ -91,6 +106,8 @@ def test_sessions_persist_without_redis(tmp_path):
             source_count=0,
         ),
         source_type="knowledge_base",
+        user_id=principal.user_id,
+        department_ids=principal.department_ids,
         created_at=datetime(2026, 7, 9, 10, 0, 0),
     )
 
@@ -104,12 +121,12 @@ def test_sessions_persist_without_redis(tmp_path):
         redis_client=None,
         session_store_path=store_path,
     )
-    sessions = reloaded.list_sessions()
+    sessions = reloaded.list_sessions(principal)
 
     assert sessions[0]["session_id"] == "local-session-1"
-    assert reloaded.get_session("local-session-1")["answer"] == "可以保存"
-    assert reloaded.delete_session("local-session-1") is True
-    assert reloaded.list_sessions() == []
+    assert reloaded.get_session("local-session-1", principal)["answer"] == "可以保存"
+    assert reloaded.delete_session("local-session-1", principal) is True
+    assert reloaded.list_sessions(principal) == []
 
 
 def test_documents_list_endpoint():

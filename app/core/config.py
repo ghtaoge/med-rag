@@ -24,6 +24,7 @@ DEFAULTS: dict[str, Any] = {
         "version": "1.0.0",
         "host": "0.0.0.0",
         "port": 8000,
+        "environment": "development",
     },
     "milvus": {
         "host": "localhost",
@@ -80,7 +81,6 @@ DEFAULTS: dict[str, Any] = {
         },
     },
     "security": {
-        "bootstrap_admin_key": "",
         "max_upload_bytes": 50 * 1024 * 1024,
         "max_archive_ratio": 100,
         "max_archive_uncompressed_bytes": 500 * 1024 * 1024,
@@ -89,6 +89,16 @@ DEFAULTS: dict[str, Any] = {
     "cors": {
         "allowed_origins": ["http://localhost:3000"],
     },
+    "database": {
+        "url": "sqlite:///./data/med_rag.db",
+    },
+    "auth": {
+        "jwt_secret": "",
+        "access_ttl_seconds": 900,
+        "refresh_ttl_seconds": 604800,
+        "issuer": "med-rag",
+        "secure_cookies": True,
+    },
     "knowledge_dir": "data",
     "whoosh_dir": "whoosh_index",
     "log_level": "INFO",
@@ -96,6 +106,7 @@ DEFAULTS: dict[str, Any] = {
 
 # 环境变量 → 配置键映射
 ENV_MAPPINGS: dict[str, tuple[str, str | None]] = {
+    "RAG_ENVIRONMENT": ("app", "environment"),
     "RAG_MILVUS_HOST": ("milvus", "host"),
     "RAG_MILVUS_PORT": ("milvus", "port"),
     "RAG_REDIS_HOST": ("redis", "host"),
@@ -108,8 +119,10 @@ ENV_MAPPINGS: dict[str, tuple[str, str | None]] = {
     "DEEPSEEK_API_KEY": ("llm.deepseek", "api_key"),
     "QWEN_API_KEY": ("llm.qwen", "api_key"),
     "ZHIPU_API_KEY": ("llm.zhipu", "api_key"),
-    "RAG_BOOTSTRAP_ADMIN_KEY": ("security", "bootstrap_admin_key"),
     "RAG_CORS_ORIGINS": ("cors", "allowed_origins"),
+    "RAG_DATABASE_URL": ("database", "url"),
+    "RAG_JWT_SECRET": ("auth", "jwt_secret"),
+    "RAG_SECURE_COOKIES": ("auth", "secure_cookies"),
 }
 
 # 需要强制转 int 的字段
@@ -136,6 +149,8 @@ INT_FIELDS: list[tuple[str, str]] = [
     ("security", "max_archive_ratio"),
     ("security", "max_archive_uncompressed_bytes"),
     ("security", "max_archive_members"),
+    ("auth", "access_ttl_seconds"),
+    ("auth", "refresh_ttl_seconds"),
 ]
 
 # 需要强制转 float 的字段
@@ -146,6 +161,7 @@ FLOAT_FIELDS: list[tuple[str, str]] = [
 
 BOOL_FIELDS: list[tuple[str, str]] = [
     ("retrieval", "llm_fallback_enabled"),
+    ("auth", "secure_cookies"),
 ]
 
 

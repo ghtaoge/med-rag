@@ -6,7 +6,6 @@ from app.core.models import (
     IntentCategory,
     ConfidenceLevel,
     ChunkType,
-    QaSession,
     IntentResult,
     CorrectnessResult,
     ChunkMetadata,

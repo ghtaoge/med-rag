@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from app.core.models import SearchResult, IntentCategory
+from app.core.models import IntentCategory
 from app.retrieval.hybrid_engine import HybridRetrievalEngine
+from app.retrieval.access import RetrievalAccess
 
 
 @dataclass
@@ -44,12 +45,13 @@ class RecallEvaluator:
         relevant_sources: list[str],
         top_k: int = 5,
         intent: IntentCategory | None = None,
+        access: RetrievalAccess | None = None,
     ) -> RecallMetrics:
         """评估单条查询的召回指标。"""
 
         # 执行检索
         results = self.retrieval_engine.search(
-            question=question, top_k=top_k, intent=intent
+            question=question, top_k=top_k, intent=intent, access=access
         )
 
         # 检索到的来源文件名
@@ -87,12 +89,15 @@ class RecallEvaluator:
         self,
         eval_set: list[tuple[str, list[str]]],
         top_k: int = 5,
+        access: RetrievalAccess | None = None,
     ) -> list[RecallMetrics]:
         """批量评估召回指标。"""
 
         results = []
         for question, relevant_sources in eval_set:
-            metrics = self.evaluate_single(question, relevant_sources, top_k)
+            metrics = self.evaluate_single(
+                question, relevant_sources, top_k, access=access
+            )
             results.append(metrics)
 
         return results

@@ -154,12 +154,32 @@ pytest tests/test_generation/ -v
 - ⚠️ **docker-compose.yml** 中 Milvus/MinIO 的默认密码仅适用于开发环境，**生产部署前必须修改**
 - ⚠️ `.env` 文件已被 `.gitignore` 排除，不会被提交到 Git
 
-### 临时管理鉴权
+### 身份与数据库运维
 
-正式身份与部门权限上线前，文档、评估和引擎信息接口要求请求头
-`X-Med-Rag-Admin-Key`。请将 `RAG_BOOTSTRAP_ADMIN_KEY` 设置为至少 32 位随机值；
-未配置时这些接口会返回 503，不会以匿名方式降级开放。该临时密钥会在本地账户与 RBAC
-上线后移除。
+生产环境必须配置 PostgreSQL 和至少 32 字符的随机 JWT 密钥。临时管理 Key 已停用，管理接口统一使用短期 Access Token、旋转 Refresh Token 和部门角色授权。
+
+```bash
+# 生成密钥并写入部署环境，不要提交实际值
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+
+# 启动基础设施和应用，容器启动时会先执行 Alembic 迁移
+docker compose up -d --build
+
+# 创建或复用初始平台管理员，密码只从环境变量读取
+docker compose exec \
+  -e RAG_INITIAL_ADMIN_PASSWORD='replace-with-a-strong-password' \
+  med-rag python scripts/create_admin.py
+```
+
+数据库迁移、备份和恢复：
+
+```bash
+docker compose exec med-rag alembic upgrade head
+docker compose exec postgres pg_dump -U med_rag -Fc med_rag > med_rag.dump
+docker compose exec -T postgres pg_restore -U med_rag -d med_rag --clean < med_rag.dump
+```
+
+备份范围还应包含 `knowledge_data`、`whoosh_data` 和 Milvus 数据卷。恢复后，对已批准文档执行索引重建，确保数据库 ACL 与两个检索索引一致。
 
 ## License
 

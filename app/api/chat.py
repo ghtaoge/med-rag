@@ -10,6 +10,7 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.core.models import (
     QaSession,
@@ -18,7 +19,7 @@ from app.core.models import (
     CorrectnessResult,
     IntentCategory,
 )
-from app.core.exceptions import RetrievalError, GenerationError
+from app.core.exceptions import GenerationError, MedRagError, RetrievalError
 from app.core.logging import get_logger
 
 from app.retrieval.hybrid_engine import HybridRetrievalEngine
@@ -31,6 +32,10 @@ from app.generation.prompt_builder import (
 from app.generation.stream import SSEStreamer
 from app.intent.classifier import IntentClassifier
 from app.evaluation.correctness_check import CorrectnessChecker
+from app.retrieval.access import RetrievalAccess
+
+if TYPE_CHECKING:
+    from app.security.principal import Principal
 
 logger = get_logger(__name__)
 
@@ -63,7 +68,7 @@ class ChatOrchestrator:
         self.sse_streamer = SSEStreamer()
         self.session_store_path = session_store_path
 
-    async def chat(self, question: str) -> QaSession:
+    async def chat(self, question: str, principal: Principal) -> QaSession:
         """非流式问答完整流程。返回完整 QaSession。"""
 
         session_id = str(uuid.uuid4())
@@ -72,7 +77,7 @@ class ChatOrchestrator:
         intent_result = self._classify_intent(question)
 
         # 2. 混合检索
-        search_results = self._retrieve(question, intent_result.category)
+        search_results = self._retrieve(question, intent_result.category, principal)
 
         # 3. Prompt 构建 + LLM 生成
         # 检索为空时可以按配置走 LLM 通用知识兜底。
@@ -116,6 +121,8 @@ class ChatOrchestrator:
             intent=intent_result,
             correctness=correctness,
             source_type=source_type,
+            user_id=principal.user_id,
+            department_ids=principal.department_ids,
             created_at=datetime.now(),
         )
 
@@ -132,7 +139,9 @@ class ChatOrchestrator:
 
         return session
 
-    async def chat_stream(self, question: str) -> AsyncIterator[str]:
+    async def chat_stream(
+        self, question: str, principal: Principal
+    ) -> AsyncIterator[str]:
         """流式问答完整流程。逐步生成 SSE 事件。"""
 
         session_id = str(uuid.uuid4())
@@ -147,7 +156,7 @@ class ChatOrchestrator:
             sources=["milvus", "whoosh"],
         )
 
-        search_results = self._retrieve(question, intent_result.category)
+        search_results = self._retrieve(question, intent_result.category, principal)
 
         yield self.sse_streamer.stream_search_result(
             chunks=len(search_results),
@@ -214,6 +223,8 @@ class ChatOrchestrator:
             intent=intent_result,
             correctness=correctness,
             source_type=source_type,
+            user_id=principal.user_id,
+            department_ids=principal.department_ids,
             created_at=datetime.now(),
         )
         self._save_session(session)
@@ -243,14 +254,23 @@ class ChatOrchestrator:
             )
 
     def _retrieve(
-        self, question: str, intent: IntentCategory, top_k: int = 5
+        self,
+        question: str,
+        intent: IntentCategory,
+        principal: Principal,
+        top_k: int = 5,
     ) -> list[SearchResult]:
         """混合检索。"""
 
         try:
             return self.retrieval_engine.search(
-                question=question, top_k=top_k, intent=intent
+                question=question,
+                top_k=top_k,
+                intent=intent,
+                access=RetrievalAccess(principal.user_id, principal.department_ids),
             )
+        except MedRagError:
+            raise
         except Exception as e:
             logger.warning("retrieval_failed", error=str(e))
             raise RetrievalError(f"检索引擎异常: {e}")
@@ -300,7 +320,8 @@ class ChatOrchestrator:
         session_data = self._serialize_session(session)
 
         if self.redis_client is None:
-            self._save_local_session(session_data)
+            if self._local_fallback_enabled():
+                self._save_local_session(session_data)
             return
 
         from app.core.config import get_config
@@ -309,14 +330,15 @@ class ChatOrchestrator:
         prefix = cfg["redis"]["session_prefix"]
         ttl = cfg["redis"]["session_ttl"]
 
-        key = f"{prefix}{session.session_id}"
+        key = self._session_key(session.user_id, session.session_id, prefix)
 
         try:
             self.redis_client.setex(key, ttl, json.dumps(session_data, ensure_ascii=False))
         except Exception as e:
             # Redis 不可用时降级到本地文件，保证历史记录页面仍然有数据可读。
             logger.warning("save_session_redis_error", error=str(e))
-            self._save_local_session(session_data)
+            if self._local_fallback_enabled():
+                self._save_local_session(session_data)
 
     def _serialize_session(self, session: QaSession) -> dict:
         """Convert a QaSession into the API history payload."""
@@ -334,6 +356,8 @@ class ChatOrchestrator:
 
         return {
             "session_id": session.session_id,
+            "user_id": session.user_id,
+            "department_ids": session.department_ids,
             "question": session.question,
             "answer": session.answer,
             "intent": {
@@ -354,6 +378,8 @@ class ChatOrchestrator:
                     "source": s.chunk.source,
                     "score": s.score,
                     "content_preview": s.chunk.content[:200],
+                    "document_id": s.chunk.metadata.document_id,
+                    "document_version_id": s.chunk.metadata.document_version_id,
                 }
                 for s in session.sources
             ],
@@ -370,6 +396,13 @@ class ChatOrchestrator:
         # 本地历史记录跟随 knowledge_dir 存放，并已在 .gitignore 中忽略，
         # 避免把用户问答内容误提交到仓库。
         return Path(get_config()["knowledge_dir"]) / ".med-rag-sessions.json"
+
+    def _local_fallback_enabled(self) -> bool:
+        if self.session_store_path is not None:
+            return True
+        from app.core.config import get_config
+
+        return get_config().get("app", {}).get("environment") == "test"
 
     def _load_local_sessions(self) -> dict[str, dict]:
         path = self._get_local_session_store_path()
@@ -408,43 +441,76 @@ class ChatOrchestrator:
     def _save_local_session(self, session_data: dict) -> None:
         try:
             sessions = self._load_local_sessions()
-            sessions[session_data["session_id"]] = session_data
+            key = self._session_key(
+                session_data["user_id"], session_data["session_id"], ""
+            )
+            sessions[key] = session_data
             ordered = sorted(
                 sessions.values(),
                 key=lambda s: s.get("created_at", ""),
                 reverse=True,
             )[:100]
             # 本地兜底存储只保留最近 100 条，避免开发环境长期使用后文件过大。
-            self._write_local_sessions({s["session_id"]: s for s in ordered})
+            self._write_local_sessions(
+                {
+                    self._session_key(s["user_id"], s["session_id"], ""): s
+                    for s in ordered
+                }
+            )
         except Exception as e:
             logger.warning("save_local_session_error", error=str(e))
 
-    def get_session(self, session_id: str) -> dict | None:
+    @staticmethod
+    def _session_key(user_id: str, session_id: str, prefix: str = "") -> str:
+        return f"{prefix}{user_id}:{session_id}"
+
+    def _local_sessions_for(self, principal: Principal) -> dict[str, dict]:
+        return {
+            key: value
+            for key, value in self._load_local_sessions().items()
+            if value.get("user_id") == principal.user_id
+        }
+
+    def get_session(self, session_id: str, principal: Principal) -> dict | None:
         """从 Redis 获取问答会话。"""
 
         if self.redis_client is None:
-            return self._load_local_sessions().get(session_id)
+            if not self._local_fallback_enabled():
+                return None
+            return self._local_sessions_for(principal).get(
+                self._session_key(principal.user_id, session_id)
+            )
 
         from app.core.config import get_config
 
         cfg = get_config()
         prefix = cfg["redis"]["session_prefix"]
-        key = f"{prefix}{session_id}"
+        key = self._session_key(principal.user_id, session_id, prefix)
 
         try:
             data = self.redis_client.get(key)
             if data is None:
-                return self._load_local_sessions().get(session_id)
+                if not self._local_fallback_enabled():
+                    return None
+                return self._local_sessions_for(principal).get(
+                    self._session_key(principal.user_id, session_id)
+                )
             return json.loads(data)
         except Exception as e:
             logger.warning("get_session_redis_error", error=str(e))
-            return self._load_local_sessions().get(session_id)
+            if not self._local_fallback_enabled():
+                return None
+            return self._local_sessions_for(principal).get(
+                self._session_key(principal.user_id, session_id)
+            )
 
-    def list_sessions(self, limit: int = 20) -> list[dict]:
+    def list_sessions(self, principal: Principal, limit: int = 20) -> list[dict]:
         """列出最近的问答会话。"""
 
         if self.redis_client is None:
-            sessions = list(self._load_local_sessions().values())
+            if not self._local_fallback_enabled():
+                return []
+            sessions = list(self._local_sessions_for(principal).values())
             sessions.sort(key=lambda s: s.get("created_at", ""), reverse=True)
             return sessions[:limit]
 
@@ -454,7 +520,7 @@ class ChatOrchestrator:
         prefix = cfg["redis"]["session_prefix"]
 
         try:
-            keys = self.redis_client.keys(f"{prefix}*")
+            keys = self.redis_client.keys(f"{prefix}{principal.user_id}:*")
             sessions = []
             for key in keys[:limit]:
                 data = self.redis_client.get(key)
@@ -465,21 +531,28 @@ class ChatOrchestrator:
             sessions.sort(key=lambda s: s.get("created_at", ""), reverse=True)
             if sessions:
                 return sessions[:limit]
-            local_sessions = list(self._load_local_sessions().values())
+            if not self._local_fallback_enabled():
+                return []
+            local_sessions = list(self._local_sessions_for(principal).values())
             local_sessions.sort(key=lambda s: s.get("created_at", ""), reverse=True)
             return local_sessions[:limit]
         except Exception as e:
             logger.warning("list_sessions_redis_error", error=str(e))
-            sessions = list(self._load_local_sessions().values())
+            if not self._local_fallback_enabled():
+                return []
+            sessions = list(self._local_sessions_for(principal).values())
             sessions.sort(key=lambda s: s.get("created_at", ""), reverse=True)
             return sessions[:limit]
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, principal: Principal) -> bool:
         """删除问答会话。"""
 
         if self.redis_client is None:
+            if not self._local_fallback_enabled():
+                return False
             sessions = self._load_local_sessions()
-            deleted = sessions.pop(session_id, None) is not None
+            local_key = self._session_key(principal.user_id, session_id)
+            deleted = sessions.pop(local_key, None) is not None
             if deleted:
                 self._write_local_sessions(sessions)
             return deleted
@@ -488,19 +561,23 @@ class ChatOrchestrator:
 
         cfg = get_config()
         prefix = cfg["redis"]["session_prefix"]
-        key = f"{prefix}{session_id}"
+        key = self._session_key(principal.user_id, session_id, prefix)
 
         try:
             deleted = bool(self.redis_client.delete(key))
             sessions = self._load_local_sessions()
-            local_deleted = sessions.pop(session_id, None) is not None
+            local_key = self._session_key(principal.user_id, session_id)
+            local_deleted = sessions.pop(local_key, None) is not None
             if local_deleted:
                 self._write_local_sessions(sessions)
             return deleted or local_deleted
         except Exception as e:
             logger.warning("delete_session_redis_error", error=str(e))
+            if not self._local_fallback_enabled():
+                return False
             sessions = self._load_local_sessions()
-            deleted = sessions.pop(session_id, None) is not None
+            local_key = self._session_key(principal.user_id, session_id)
+            deleted = sessions.pop(local_key, None) is not None
             if deleted:
                 self._write_local_sessions(sessions)
             return deleted

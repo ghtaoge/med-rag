@@ -4,8 +4,6 @@ import json
 
 from app.generation.stream import SSEStreamer
 from app.core.models import (
-    DocumentChunk,
-    SearchResult,
     IntentResult,
     CorrectnessResult,
     IntentCategory,
